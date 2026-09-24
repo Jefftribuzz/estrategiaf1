@@ -45,7 +45,17 @@ export function seasonHeader(s: SeasonState): string {
   </div>`;
 }
 
-export function hqView(s: SeasonState, tab: HqTab): string {
+export interface HqOptions {
+  /** Garagem e desenvolvimento liberados (padrão: só sem GP em andamento). */
+  shopOpen?: boolean;
+  /** Ações extras no topo (ex.: liga online). */
+  extra?: string;
+  /** Liga online: sem botão de abandonar e sem "ir para o GP" local. */
+  online?: boolean;
+}
+
+export function hqView(s: SeasonState, tab: HqTab, opts: HqOptions = {}): string {
+  const shopOpen = opts.shopOpen ?? !s.weekend;
   const tabs = `<div class="tabs">${TABS.map(([id, l]) => `<button class="tab${tab === id ? ' active' : ''}" data-act="hq-tab" data-arg="${id}">${l}</button>`).join('')}</div>`;
   const next = s.finished ? null : getTrack(s.calendar[s.round]);
   const w = s.weekend;
@@ -54,16 +64,17 @@ export function hqView(s: SeasonState, tab: HqTab): string {
   else if (w && w.completed >= 3) action = '<button class="btn big" data-act="goto" data-arg="results">Resultado do GP ▶</button>';
   else if (w) action = `<button class="btn big" data-act="goto" data-arg="hub">Continuar GP de ${esc(next!.name)} ▶</button>`;
   else action = `<button class="btn big" data-act="start-round">Ir para o GP de ${esc(next!.name)} ▶</button>`;
+  if (opts.extra) action += opts.extra;
   const body =
     tab === 'calendario' ? calendarTab(s) :
     tab === 'classificacao' ? standingsTab(s) :
-    tab === 'garagem' ? garageTab(s) :
-    tab === 'desenvolvimento' ? devTab(s) : financeTab(s);
+    tab === 'garagem' ? garageTab(s, shopOpen) :
+    tab === 'desenvolvimento' ? devTab(s, shopOpen) : financeTab(s);
   return `${seasonHeader(s)}
     <h1>QG da equipe</h1>
     <div class="row" style="margin-bottom:10px">${action}</div>
     ${tabs}${body}
-    <div class="row" style="margin-top:12px"><button class="btn small danger" data-act="abandon-season">Abandonar temporada</button></div>`;
+    ${opts.online ? '' : '<div class="row" style="margin-top:12px"><button class="btn small danger" data-act="abandon-season">Abandonar temporada</button></div>'}`;
 }
 
 function calendarTab(s: SeasonState): string {
@@ -117,9 +128,9 @@ function standingsTab(s: SeasonState): string {
   <p class="muted" style="margin-top:8px;font-size:8px">Pontos: ${POINTS.join('-')} do 1º ao 8º. Empate: mais vitórias, depois mais pódios.</p></div>`;
 }
 
-function garageTab(s: SeasonState): string {
-  const locked = !!s.weekend;
-  const lockNote = locked ? '<p class="red" style="font-size:8px">Compras na garagem só entre um GP e outro (você pode comprar peças novas direto na classificação).</p>' : '';
+function garageTab(s: SeasonState, shopOpen: boolean): string {
+  const locked = !shopOpen;
+  const lockNote = locked ? '<p class="red" style="font-size:8px">Garagem fechada agora: compre entre um GP e outro, antes do teste (peças novas também podem ser escolhidas direto na classificação).</p>' : '';
   const engines = s.engines.length
     ? s.engines
         .map((e) => {
@@ -154,9 +165,9 @@ function garageTab(s: SeasonState): string {
     <p class="muted" style="margin-top:8px;font-size:8px">Peças da garagem não são cobradas de novo nos fins de semana. Pneus são comprados a cada GP.</p></div>`;
 }
 
-function devTab(s: SeasonState): string {
+function devTab(s: SeasonState, shopOpen: boolean): string {
   const mine = s.dev[s.playerTeamId];
-  const locked = !!s.weekend;
+  const locked = !shopOpen;
   const areas = DEV_AREAS.map((a) => {
     const lv = mine[a.id];
     const cost = devCost(lv);
@@ -175,7 +186,7 @@ function devTab(s: SeasonState): string {
       ${DEV_AREAS.map((a) => `<td class="num">${lv[a.id]}</td>`).join('')}<td class="num yellow">${total}</td></tr>`)
     .join('');
   return `<div class="grid two">
-    <div class="panel"><h2>Desenvolver o carro</h2>${locked ? '<p class="red" style="font-size:8px">Desenvolvimento só entre um GP e outro.</p>' : ''}
+    <div class="panel"><h2>Desenvolver o carro</h2>${locked ? '<p class="red" style="font-size:8px">Desenvolvimento só entre um GP e outro, antes do teste.</p>' : ''}
       <div class="parts">${areas}</div>
       <p class="muted" style="margin-top:8px;font-size:8px">Cada nível custa mais que o anterior. As rivais também investem o dinheiro dos prêmios.</p></div>
     <div class="panel"><h2>Espionagem: rivais</h2><div class="table-wrap"><table>

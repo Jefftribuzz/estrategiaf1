@@ -101,5 +101,8 @@ describe('liga', () => {
     expect(l.results).toHaveLength(10);
     for (const slot of Object.values(l.humans)) expect(slot.cash).toBeGreaterThanOrEqual(0);
     expect(viewFor(l, 'u1').season!.finished).toBe(true);
+    const last = viewFor(l, 'u1').lastWeekend!;
+    expect(last.race!.classification).toHaveLength(10);
+    expect(last.trackId).toBe('interlagos');
   }, 60000);
 });

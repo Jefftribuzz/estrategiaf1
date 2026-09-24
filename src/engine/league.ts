@@ -76,6 +76,8 @@ export interface LeagueState {
   points: Record<string, number>;
   results: SeasonState['results'];
   weekend: WeekendState | null;
+  /** Último GP concluído (para replay e resultado). */
+  lastWeekend?: WeekendState | null;
   decisions: SessionDecisions;
   /** Aumenta a cada mudança (o cliente usa para saber se precisa redesenhar). */
   rev: number;
@@ -264,6 +266,7 @@ function closeRound(l: LeagueState): LeagueState {
     results: [...l.results, field.result],
     round,
     weekend: null,
+    lastWeekend: w,
     decisions: {},
   };
   return round >= l.calendar.length ? { ...next, status: 'finished' } : openRound(next);
@@ -453,6 +456,8 @@ export interface LeagueView {
   /** Decisão que eu já enviei para a sessão atual. */
   myDecision: unknown;
   season: SeasonState | null;
+  /** Último GP concluído, na visão deste jogador. */
+  lastWeekend: WeekendState | null;
   rev: number;
 }
 
@@ -505,6 +510,7 @@ export function viewFor(l: LeagueState, userId: string): LeagueView {
     session,
     myDecision: myTeamId ? ((decided as Record<string, unknown>)[myTeamId] ?? null) : null,
     season,
+    lastWeekend: myTeamId && l.lastWeekend ? redactWeekend(l.lastWeekend, myTeamId) : null,
     rev: l.rev,
   };
 }

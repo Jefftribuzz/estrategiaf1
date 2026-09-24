@@ -8,10 +8,15 @@ estratégia. O jogo simula o resto.
 
 ```bash
 npm install
-npm run dev      # servidor local em http://localhost:5173
-npm test         # testes do motor (física, equilíbrio, fim de semana)
-npm run build    # versão estática em dist/ (pode ir para GitHub Pages)
+npm run dev          # jogo em http://localhost:5173 (modos solo)
+npm run dev:server   # servidor do multiplayer em http://localhost:8787
+npm test             # testes (física, equilíbrio, temporada, liga, API)
+npm run build        # jogo em dist/ + servidor em dist-server/
+npm start            # sobe o servidor, que serve o jogo e a API
 ```
+
+Com `npm run dev` e `npm run dev:server` rodando juntos, o Vite repassa `/api`
+para o servidor, então o multiplayer funciona também no modo de desenvolvimento.
 
 ## O que tem na Fase 1
 
@@ -65,6 +70,50 @@ npm run build    # versão estática em dist/ (pode ir para GitHub Pages)
 - **Traçados reais**: os circuitos vêm das coordenadas reais
   ([bacinger/f1-circuits](https://github.com/bacinger/f1-circuits), MIT).
 
+## Fase 4: multiplayer online
+
+- **Perfil por apelido**: sem senha. O acesso fica salvo no navegador.
+- **Ligas privadas** com código de convite e link (`?liga=CODIGO`). Até 10
+  humanos, cada um com uma equipe diferente; as outras ficam com os bots.
+- **Temporada completa** online: garagem, desenvolvimento, finanças e
+  campeonato de cada jogador.
+- **Horário**: cada sessão roda às **20h no fuso da liga** (o fuso de quem
+  criou), e cada amigo vê o horário convertido para o fuso dele. Existe também
+  o ritmo **rápido** (uma sessão a cada 10 minutos), bom para testar.
+- **Prazos**: a sessão roda no horário, ou antes se todos já enviaram. Quem
+  não enviar fica com a decisão do engenheiro. O dono da liga pode antecipar a
+  sessão.
+- **Servidor autoritativo**: a simulação roda no servidor. O jogador não vê a
+  semente, o tempo real futuro nem a telemetria dos outros, só a previsão.
+- **Avanço preguiçoso**: sessões vencidas são simuladas no primeiro acesso
+  depois do horário. Como o motor é determinístico, o resultado é o mesmo, e o
+  servidor pode "dormir" (plano gratuito) sem perder corridas.
+
+### Horários dos circuitos
+
+Cada sessão mostra o horário local no circuito, no estilo da F1 real (corridas
+de dia, 14h ou 15h locais). Dois são fictícios, para ter corridas em
+iluminações diferentes: **Baku à noite** (como Singapura e Jidá) e
+**Interlagos no entardecer** (como a final de Abu Dhabi). À noite a pista
+esfria e o replay ganha holofotes. As sessões do jogador continuam às 20h no
+fuso dele.
+
+## Publicar online (grátis)
+
+1. **Banco de dados (Supabase)**: crie um projeto em https://supabase.com.
+   Em *Project Settings → Database → Connection string → URI*, copie a string
+   (modo *Session pooler*) e troque `[YOUR-PASSWORD]` pela senha do projeto.
+2. **Servidor (Render)**: em https://render.com, escolha *New → Blueprint* e
+   aponte para este repositório. O `render.yaml` já configura tudo. Quando ele
+   pedir `DATABASE_URL`, cole a string do Supabase.
+3. Abra o endereço que o Render criar (ex.: `https://grande-premio-8bit.onrender.com`)
+   e mande o link da liga para os amigos.
+
+O servidor cria a tabela sozinho (`gp8_kv`). Sem `DATABASE_URL`, ele grava em
+arquivos na pasta `DATA_DIR` (padrão `./data`), o que serve para rodar num
+computador ou VPS com disco. No plano gratuito do Render o serviço dorme sem
+acesso e demora uns 50 s para acordar, mas nenhuma sessão se perde.
+
 ## Arquitetura
 
 ```
@@ -78,7 +127,9 @@ src/engine/   Motor puro em TypeScript, sem DOM e determinístico (semente).
   weather.ts      clima e previsão
   weekend.ts      orquestração do fim de semana
   season.ts       temporada, economia, garagem e desenvolvimento
-src/ui/       Interface (telas, sprites, replay, áudio chiptune)
+  league.ts       liga multiplayer (lobby, prazos, decisões, visão por jogador)
+server/       API HTTP (Node, sem framework) + armazenamento em arquivo ou Postgres
+src/ui/       Interface (telas, sprites, replay, áudio chiptune, cliente online)
 tests/        Vitest
 ```
 
@@ -87,8 +138,7 @@ tests/        Vitest
 1. ~~MVP solo~~ ✔
 2. ~~Visual e som~~ ✔
 3. ~~Temporada~~ ✔
-4. Multiplayer: login, ligas privadas, sessões agendadas no servidor e
-   notificações
+4. ~~Multiplayer online~~ ✔ (notificações push ficam para a Fase 5)
 5. Polimento: balanceamento, ranking e celular (PWA)
 
 As cores dos carros e capacetes são aproximações em pixel art das pinturas
