@@ -585,7 +585,11 @@ export function createApp(opts: AppOptions) {
     if (file !== root && !file.startsWith(root + sep)) throw new HttpError(404, 'Não encontrado.');
     let status = 200;
     try {
-      if ((await stat(file)).isDirectory()) file = join(file, 'index.html');
+      if ((await stat(file)).isDirectory()) {
+        // Um endereço só por página (bom para o Google): /pistas/x → /pistas/x/
+        if (!path.endsWith('/')) return redirect(res, path + '/' + url.search);
+        file = join(file, 'index.html');
+      }
       await stat(file);
     } catch {
       // Página que não existe: dentro do jogo, abre o jogo; fora, a página 404 da landing.

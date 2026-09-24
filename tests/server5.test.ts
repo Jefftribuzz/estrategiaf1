@@ -97,6 +97,12 @@ describe('domínio: landing na raiz e jogo em /jogar/', () => {
     expect(miss.status).toBe(404);
     expect(await miss.text()).toContain('404');
     expect((await get('/%E0%A4%A')).status).toBe(400);
+    await mkdir(join(dir, 'static', 'pistas', 'monza'), { recursive: true });
+    await writeFile(join(dir, 'static', 'pistas', 'monza', 'index.html'), '<!doctype html><title>monza</title>');
+    const r3 = await get('/pistas/monza');
+    expect(r3.status).toBe(301);
+    expect(r3.headers.get('location')).toBe('/pistas/monza/');
+    expect(await (await get('/pistas/monza/')).text()).toContain('monza');
   });
 });
 
