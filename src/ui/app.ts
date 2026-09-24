@@ -18,6 +18,7 @@ import {
   validateStrategy,
   type WeekendState,
 } from '../engine/weekend';
+import { chip } from './audio';
 import { Replay } from './replay';
 import { carSprite, drawTrack, helmetSprite } from './sprites';
 import { bar, esc, forecastCard, partPicker, tyreBadge } from './views';
@@ -38,9 +39,11 @@ interface UiState {
   raceDraft: RaceStrategy;
   error: string;
   replayDone: boolean;
+  fanfarePending: boolean;
 }
 
 const SAVE_KEY = 'f1m8.save.v1';
+const CRT_KEY = 'f1m8.crt';
 const DEFAULT_SETUP: CarSetup = { aero: 'A5', engine: 'M5', tyre: 'P4' };
 
 const ui: UiState = {
@@ -56,6 +59,7 @@ const ui: UiState = {
   raceDraft: { stints: ['P4', 'P4'], pitLaps: [14], mode: 'normal' },
   error: '',
   replayDone: false,
+  fanfarePending: false,
 };
 
 let root: HTMLElement;
@@ -89,6 +93,13 @@ function go(screen: Screen) {
   ui.screen = screen;
   ui.error = '';
   render();
+  root.classList.remove('enter');
+  void root.offsetWidth;
+  root.classList.add('enter');
+  if (screen === 'results' && ui.fanfarePending) {
+    ui.fanfarePending = false;
+    chip.sfx('fanfare');
+  }
   window.scrollTo(0, 0);
 }
 
@@ -124,9 +135,11 @@ function header(): string {
 function titleView(): string {
   const saved = loadSave();
   return `<div class="title-screen">
+    <div class="title-lights">${'<span></span>'.repeat(5)}</div>
     <h1>GRANDE PRÊMIO 8-BIT</h1>
     <p class="muted">Gerência de F1 · Estratégia · Lendas das pistas</p>
     <div class="parade"><div class="lane">${TEAMS.map((t) => `<img class="px" src="${carSprite(t)}" alt="${esc(t.car)}">`).join('')}</div></div>
+    <p class="press-start">APERTE START</p>
     <div class="row" style="justify-content:center">
       <button class="btn big" data-act="goto" data-arg="team">▶ Corrida rápida</button>
       ${saved ? '<button class="btn big secondary" data-act="continue">Continuar fim de semana</button>' : ''}
@@ -478,11 +491,8 @@ function resultsView(): string {
     me.points > 0 ? `P${me.position} e ${me.points} pontos.` : `P${me.position}. Ainda dá para ajustar a estratégia.`;
   return `${header()}
     <h1>Resultado · GP de ${esc(getTrack(w.trackId).name)}</h1>
-    <div class="panel row">
-      <img class="px" src="${carSprite(winner)}" width="160" height="56" alt="${esc(winner.car)}">
-      <div><div class="yellow">🏆 ${esc(winner.driver.name)}</div><div class="muted">${esc(winner.car)}</div>
-      <p style="margin-top:8px">${esc(msg)}</p></div>
-    </div>
+    ${podium(race.classification.filter((c) => c.status === 'finished').slice(0, 3).map((c) => c.teamId), w.playerTeamId)}
+    <div class="panel tight"><span class="yellow">🏆 ${esc(winner.driver.name)}</span> <span class="muted">(${esc(winner.car)})</span> · ${esc(msg)}</div>
     <div class="panel"><div class="table-wrap"><table>
       <tr><th>Pos</th><th>Piloto</th><th class="num">Grid</th><th>Estratégia</th><th class="num">Paradas</th><th class="num">Melhor volta</th><th class="num">Tempo</th><th class="num">Pts</th></tr>
       ${race.classification
@@ -505,6 +515,25 @@ function resultsView(): string {
     </div>`;
 }
 
+function podium(top: string[], playerId: string): string {
+  const confetti = Array.from({ length: 36 }, (_, i) => {
+    const colors = ['#ffd23f', '#e43b44', '#3b8bea', '#3fbf6f', '#f4f4f4', '#d67bff'];
+    return `<i style="left:${(i * 37) % 100}%;background:${colors[i % colors.length]};animation-delay:${((i * 0.23) % 2.4).toFixed(2)}s;animation-duration:${(2.2 + ((i * 0.37) % 1.6)).toFixed(2)}s"></i>`;
+  }).join('');
+  const step = (pos: number) => {
+    const id = top[pos - 1];
+    if (!id) return `<div class="step p${pos}"><div class="block">${pos}</div></div>`;
+    const t = getTeam(id);
+    return `<div class="step p${pos}${id === playerId ? ' me' : ''}">
+      <img class="px podium-helmet" src="${helmetSprite(t)}" alt="">
+      <img class="px podium-car" src="${carSprite(t)}" alt="${esc(t.car)}">
+      <div class="name">${esc(t.driver.shortName)}</div>
+      <div class="block">${pos}</div></div>`;
+  };
+  return `<div class="panel podium-wrap"><div class="confetti">${confetti}</div>
+    <div class="podium">${step(2)}${step(1)}${step(3)}</div></div>`;
+}
+
 // ------------------------------------------------------------- render ------
 
 function render() {
@@ -514,7 +543,12 @@ function render() {
   };
   const needsWeekend = !['title', 'help', 'team', 'track'].includes(ui.screen);
   if (needsWeekend && !ui.weekend) ui.screen = 'title';
-  root.innerHTML = (ui.error ? `<div class="error">${esc(ui.error)}</div>` : '') + views[ui.screen]();
+  const toolbar = `<div class="toolbar">
+    <button class="tab" data-act="sound" title="Som">${chip.muted ? '🔇 SOM' : '🔊 SOM'}</button>
+    <button class="tab${document.body.classList.contains('crt') ? ' active' : ''}" data-act="crt" title="Efeito de TV antiga">📺 CRT</button></div>`;
+  root.innerHTML = toolbar + (ui.error ? `<div class="error">${esc(ui.error)}</div>` : '') + views[ui.screen]();
+  if (['title', 'help', 'team', 'track'].includes(ui.screen)) chip.playTheme();
+  else chip.stopTheme();
   root.querySelectorAll<HTMLCanvasElement>('canvas[data-track]').forEach((c) => drawTrack(c, getTrack(c.dataset.track!)));
   if (ui.screen === 'replay' && !replay) {
     replay = new Replay(
@@ -525,6 +559,7 @@ function render() {
       ui.weekend!,
       () => {
         ui.replayDone = true;
+        ui.fanfarePending = true;
         root.querySelector('#to-results')?.removeAttribute('hidden');
       },
     );
@@ -651,6 +686,18 @@ function handle(act: string, arg: string, el: HTMLElement) {
         go('replay');
       });
       return;
+    case 'sound':
+      chip.setMuted(!chip.muted);
+      break;
+    case 'crt': {
+      const on = document.body.classList.toggle('crt');
+      try {
+        localStorage.setItem(CRT_KEY, on ? '1' : '0');
+      } catch {
+        /* sem armazenamento */
+      }
+      break;
+    }
     case 'speed':
       replay?.setSpeed(Number(arg));
       return;
@@ -666,10 +713,21 @@ function handle(act: string, arg: string, el: HTMLElement) {
 
 export function mount(el: HTMLElement) {
   root = el;
+  try {
+    if (localStorage.getItem(CRT_KEY) === '1') document.body.classList.add('crt');
+  } catch {
+    /* sem armazenamento */
+  }
+  const SELECT_ACTS = new Set(['team', 'track', 'pick', 'pick-quali', 'difficulty', 'stops', 'mode', 'kind', 'draft']);
   root.addEventListener('click', (e) => {
+    // O navegador só libera áudio depois de um gesto do usuário.
+    const firstUnlock = !chip.ready;
+    chip.unlock();
+    if (firstUnlock && ['title', 'help', 'team', 'track'].includes(ui.screen)) chip.playTheme();
     const t = (e.target as HTMLElement).closest<HTMLElement>('[data-act]');
     if (!t || t.tagName === 'SELECT' || t.tagName === 'INPUT') return;
     if ((t as HTMLButtonElement).disabled) return;
+    chip.sfx(SELECT_ACTS.has(t.dataset.act!) ? 'select' : 'blip');
     handle(t.dataset.act!, t.dataset.arg ?? '', t);
   });
   root.addEventListener('change', (e) => {

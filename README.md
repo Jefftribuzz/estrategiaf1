@@ -34,6 +34,20 @@ npm run build    # versão estática em dist/ (pode ir para GitHub Pages)
 - **Orçamento** de $55M por fim de semana para peças e jogos de pneus.
 - **IA** com 3 níveis de dificuldade e **replay 8 bits** com narração.
 
+## Fase 2: visual e som
+
+- **Trilha chiptune** e efeitos sonoros sintetizados com Web Audio, sem
+  nenhum arquivo de áudio: tema de abertura, semáforo, ronco do pelotão,
+  ultrapassagens, pit stops, batidas, safety car, chuva e fanfarra no pódio.
+- **Replay renovado**: cenário com árvores, arquibancadas, boxes e zebras;
+  carros vistos de cima com a pintura de cada equipe; semáforo de 5 luzes;
+  chuva animada (a intensidade e o vento mudam a cena); safety car na pista;
+  fumaça e faíscas nos abandonos; avisos flutuantes (PIT, RODOU!, FURO!, OUT);
+  bandeira quadriculada.
+- **Pódio animado** com confete.
+- Sprites com sombreamento, transições entre telas e filtro opcional de TV
+  antiga (botão 📺 CRT). O som liga e desliga no botão 🔊.
+
 ## Arquitetura
 
 ```
@@ -46,14 +60,14 @@ src/engine/   Motor puro em TypeScript, sem DOM e determinístico (semente).
   ai.ts           decisões dos bots
   weather.ts      clima e previsão
   weekend.ts      orquestração do fim de semana
-src/ui/       Interface (telas, sprites, replay)
+src/ui/       Interface (telas, sprites, replay, áudio chiptune)
 tests/        Vitest
 ```
 
 ## Próximas fases
 
 1. ~~MVP solo~~ ✔
-2. Visual: sprites mais detalhados, trilha chiptune, efeitos de chuva no replay
+2. ~~Visual e som~~ ✔
 3. Temporada: 10 GPs, campeonato, desgaste de peças entre corridas, orçamento
    da temporada e desenvolvimento
 4. Multiplayer: login, ligas privadas, sessões agendadas no servidor e
