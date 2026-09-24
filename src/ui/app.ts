@@ -28,12 +28,26 @@ import {
   engineWearMul,
   finishRound,
   SEASON_CALENDAR,
+  standings as seasonStandings,
   startRound,
   updateWeekend,
   type DevArea,
   type SeasonState,
 } from '../engine/season';
 import { championView, hqView, seasonHeader, type HqTab } from './seasonViews';
+import {
+  avatarImg,
+  clearDrafts,
+  DEFAULT_AVATAR,
+  keepDrafts,
+  loginView,
+  profileView,
+  type Avatar,
+  type History,
+  type LoginTab,
+  type Profile,
+  type ProfileTab,
+} from './profile';
 import type { LeagueView } from '../engine/league';
 import {
   api,
@@ -56,7 +70,7 @@ import { Replay } from './replay';
 import { carSprite, drawTrack, helmetSprite } from './sprites';
 import { bar, esc, forecastCard, partPicker, tyreBadge } from './views';
 
-type Screen = 'title' | 'help' | 'team' | 'track' | 'season-setup' | 'hq' | 'champion' | 'hub' | 'practice' | 'quali' | 'race' | 'replay' | 'results' | 'online' | 'lobby' | 'ranking';
+type Screen = 'title' | 'help' | 'team' | 'track' | 'season-setup' | 'hq' | 'champion' | 'hub' | 'practice' | 'quali' | 'race' | 'replay' | 'results' | 'online' | 'lobby' | 'ranking' | 'login' | 'perfil';
 type Mode = 'quick' | 'season' | 'league';
 type PartKind = 'aero' | 'engine' | 'tyre';
 
@@ -77,6 +91,13 @@ interface UiState {
   mode: Mode;
   season: SeasonState | null;
   hqTab: HqTab;
+  profile: Profile | null;
+  profileTab: ProfileTab;
+  loginTab: LoginTab;
+  history: History | null;
+  avatarDraft: Avatar;
+  /** Tela para onde voltar depois de entrar na conta. */
+  afterLogin: Screen;
   league: LeagueView | null;
   me: MeResponse | null;
   meLoading: boolean;
@@ -117,6 +138,12 @@ const ui: UiState = {
   config: null,
   deviceLink: null,
   ranking: null,
+  profile: null,
+  profileTab: 'dados',
+  loginTab: 'entrar',
+  history: null,
+  avatarDraft: { ...DEFAULT_AVATAR },
+  afterLogin: 'title',
 };
 
 let root: HTMLElement;
@@ -752,7 +779,7 @@ function loadConfig() {
     .config()
     .then((c) => {
       ui.config = c;
-      if (ui.screen === 'online') mountGoogle();
+      if (ui.screen === 'online' || ui.screen === 'login') mountGoogle();
     })
     .catch(() => undefined);
 }
@@ -764,11 +791,165 @@ function mountGoogle() {
     remote(async () => {
       const r = await api.google(credential);
       ui.toast = r.linked ? 'Conta Google vinculada ao seu perfil!' : 'Login com Google feito!';
+      await loadProfile();
       ui.me = await api.me();
+      if (ui.screen === 'login') go(ui.afterLogin);
       const code = pendingInvite();
       if (code) await joinByCode(code);
     }),
   ).catch(() => undefined);
+}
+
+// ------------------------------------------------------------- conta ------
+
+/** Aplica as preferências do perfil neste aparelho (som e CRT). */
+function applyPrefs(p: Profile) {
+  chip.setMuted(!p.prefs.sound);
+  document.body.classList.toggle('crt', p.prefs.crt);
+  try {
+    localStorage.setItem(CRT_KEY, p.prefs.crt ? '1' : '0');
+  } catch {
+    /* sem armazenamento */
+  }
+}
+
+async function loadProfile() {
+  if (!getToken()) {
+    ui.profile = null;
+    return;
+  }
+  try {
+    ui.profile = await api.profile();
+    ui.avatarDraft = { ...(ui.profile.avatar ?? DEFAULT_AVATAR) };
+    applyPrefs(ui.profile);
+  } catch {
+    ui.profile = null;
+  }
+}
+
+/** Som e CRT mudados na barra do topo também vão para o perfil. */
+function syncPrefs() {
+  const p = ui.profile;
+  if (!p) return;
+  const prefs = { ...p.prefs, sound: !chip.muted, crt: document.body.classList.contains('crt') };
+  ui.profile = { ...p, prefs };
+  api.saveProfile({ prefs }).catch(() => undefined);
+}
+
+/** Guarda no histórico do perfil uma corrida rápida ou temporada solo (se logado). */
+function recordSolo(kind: 'rapida' | 'temporada') {
+  if (!ui.profile) return;
+  if (kind === 'rapida') {
+    const w = ui.weekend;
+    const c = w?.race?.classification.find((x) => x.teamId === w.playerTeamId);
+    if (!w || !c) return;
+    void api
+      .addHistory({ mode: 'rapida', teamId: w.playerTeamId, trackId: w.trackId, difficulty: w.difficulty, position: c.status === 'finished' ? c.position : undefined, points: c.points })
+      .catch(() => undefined);
+  } else {
+    const s = ui.season;
+    if (!s) return;
+    const row = seasonStandings(s).find((r) => r.teamId === s.playerTeamId)!;
+    void api
+      .addHistory({ mode: 'temporada', teamId: s.playerTeamId, difficulty: s.difficulty, championship: row.position, points: row.points, wins: row.wins, podiums: row.podiums })
+      .catch(() => undefined);
+  }
+}
+
+function formValue(id: string): string {
+  return (root.querySelector<HTMLInputElement>(`#${id}`)?.value ?? '').trim();
+}
+
+function formChecked(id: string): boolean {
+  return !!root.querySelector<HTMLInputElement>(`#${id}`)?.checked;
+}
+
+function afterAuth(message: string) {
+  clearDrafts();
+  ui.toast = message;
+  ui.me = null;
+  const code = pendingInvite();
+  if (code) return joinByCode(code);
+  go(ui.afterLogin === 'login' ? 'title' : ui.afterLogin);
+}
+
+function handleForm(form: string) {
+  // Lê os campos ANTES de chamar remote(): ele redesenha a tela e limparia o formulário.
+  const v = (id: string) => formValue(id);
+  // Guarda os campos de texto: se der erro, o formulário volta preenchido.
+  const texts: Record<string, string> = {};
+  root.querySelectorAll<HTMLInputElement>(`form[data-form="${form}"] input.field:not([type=password])`).forEach((i) => (texts[i.id] = i.value));
+  keepDrafts(texts);
+  const raw = (id: string) => root.querySelector<HTMLInputElement>(`#${id}`)?.value ?? '';
+  switch (form) {
+    case 'login': {
+      const email = v('login-email');
+      const password = raw('login-password');
+      remote(async () => {
+        ui.profile = await api.login(email, password);
+        ui.avatarDraft = { ...(ui.profile.avatar ?? DEFAULT_AVATAR) };
+        applyPrefs(ui.profile);
+        await afterAuth(`Bem-vindo de volta, ${ui.profile.name}!`);
+      });
+      return;
+    }
+    case 'signup': {
+      const data = { firstName: v('su-first'), lastName: v('su-last'), nickname: v('su-nick'), email: v('su-email'), password: raw('su-password') };
+      if (data.password !== raw('su-password2')) {
+        ui.error = 'As senhas não conferem.';
+        render();
+        return;
+      }
+      remote(async () => {
+        ui.profile = await api.signup(data);
+        ui.avatarDraft = { ...(ui.profile.avatar ?? DEFAULT_AVATAR) };
+        await afterAuth(`Conta criada! Bem-vindo, ${ui.profile.name}.`);
+      });
+      return;
+    }
+    case 'add-credentials': {
+      const p = ui.profile!;
+      const data = { firstName: p.firstName, lastName: p.lastName, nickname: p.name, email: v('ac-email'), password: raw('ac-password') };
+      remote(async () => {
+        ui.profile = await api.signup(data);
+        ui.toast = 'E-mail e senha adicionados. Seu perfil está protegido!';
+      });
+      return;
+    }
+    case 'profile': {
+      const patch = { firstName: v('pf-first'), lastName: v('pf-last'), nickname: v('pf-nick') };
+      remote(async () => {
+        ui.profile = await api.saveProfile(patch);
+        ui.toast = 'Perfil salvo!';
+      });
+      return;
+    }
+    case 'prefs': {
+      const prefs = {
+        sound: formChecked('pr-sound'),
+        crt: formChecked('pr-crt'),
+        notify: { session: formChecked('pr-n-session'), reminder: formChecked('pr-n-reminder'), results: formChecked('pr-n-results') },
+      };
+      remote(async () => {
+        ui.profile = await api.saveProfile({ prefs });
+        applyPrefs(ui.profile);
+        ui.toast = 'Preferências salvas!';
+      });
+      return;
+    }
+    case 'password': {
+      const current = raw('pw-current');
+      const next = raw('pw-next');
+      remote(async () => {
+        await api.changePassword(current, next);
+        ui.profile = await api.profile();
+        ui.toast = 'Senha trocada. Os outros aparelhos foram desconectados.';
+      });
+      return;
+    }
+    default:
+      return;
+  }
 }
 
 function loadMe() {
@@ -843,6 +1024,7 @@ function afterSkip(before: number) {
   }
   save();
   if (w.completed >= 3) {
+    if (before < 3 && ui.mode === 'quick') recordSolo('rapida');
     ui.replayDone = true;
     ui.fanfarePending = true;
     go('results');
@@ -873,16 +1055,21 @@ function render() {
     hq: () => (ui.mode === 'league' ? leagueHq() : hqView(ui.season!, ui.hqTab)),
     champion: () => championView(ui.season!),
     online: () => onlineView(ui.me, ui.meLoading, ui.deviceLink),
+    login: () => loginView(ui.loginTab, !!ui.config?.googleClientId),
+    perfil: () => (ui.profile ? profileView(ui.profile, ui.profileTab, ui.history, ui.avatarDraft, ui.deviceLink) : '<div class="panel">Carregando perfil...</div>'),
     ranking: () => rankingView(ui.ranking),
     lobby: () => (ui.league ? lobbyView(ui.league) : onlineView(ui.me, false)),
     practice: practiceView, quali: qualiView, race: raceView, replay: replayView, results: resultsView,
   };
-  const needsWeekend = !['title', 'help', 'team', 'track', 'season-setup', 'hq', 'champion', 'online', 'lobby', 'ranking'].includes(ui.screen);
+  const needsWeekend = !['title', 'help', 'team', 'track', 'season-setup', 'hq', 'champion', 'online', 'lobby', 'ranking', 'login', 'perfil'].includes(ui.screen);
   if (needsWeekend && !ui.weekend) ui.screen = ui.season && ui.mode === 'season' ? 'hq' : 'title';
   if (['hq', 'champion'].includes(ui.screen) && !ui.season) ui.screen = 'title';
   // A animação de entrada só toca na troca de tela (go), não a cada redesenho.
   root.classList.remove('enter');
-  const toolbar = `<div class="toolbar">
+  const account = ui.profile
+    ? `<button class="tab account" data-act="goto" data-arg="perfil" title="Meu perfil">${avatarImg(ui.profile.avatar, 16)} ${esc(ui.profile.name)}</button>`
+    : `<button class="tab" data-act="goto" data-arg="login" title="Entrar ou criar conta">👤 ENTRAR</button>`;
+  const toolbar = `<div class="toolbar">${account}
     <button class="tab" data-act="sound" title="Som">${chip.muted ? '🔇 SOM' : '🔊 SOM'}</button>
     <button class="tab${document.body.classList.contains('crt') ? ' active' : ''}" data-act="crt" title="Efeito de TV antiga">📺 CRT</button></div>`;
   const toast = ui.toast ? `<div class="toast">${esc(ui.toast)}</div>` : '';
@@ -890,7 +1077,7 @@ function render() {
   if (['title', 'help', 'team', 'track'].includes(ui.screen)) chip.playTheme();
   else chip.stopTheme();
   root.querySelectorAll<HTMLCanvasElement>('canvas[data-track]').forEach((c) => drawTrack(c, getTrack(c.dataset.track!)));
-  if (ui.screen === 'online') mountGoogle();
+  if (ui.screen === 'online' || ui.screen === 'login') mountGoogle();
   if (ui.screen === 'replay' && replay) {
     // Redesenho no meio da corrida (ex.: aviso na tela): o replay continua.
     replay.attach(
@@ -936,6 +1123,28 @@ function handle(act: string, arg: string, el: HTMLElement) {
         go('online');
         loadConfig();
         loadMe();
+        return;
+      }
+      if (arg === 'login') {
+        if (ui.screen !== 'login') ui.afterLogin = ui.screen;
+        ui.loginTab = 'entrar';
+        go('login');
+        loadConfig();
+        return;
+      }
+      if (arg === 'perfil') {
+        if (!getToken()) {
+          ui.afterLogin = 'perfil';
+          go('login');
+          loadConfig();
+          return;
+        }
+        ui.deviceLink = null;
+        go('perfil');
+        remote(async () => {
+          await loadProfile();
+          if (!ui.profile) go('login');
+        });
         return;
       }
       if (arg === 'ranking') {
@@ -1031,7 +1240,10 @@ function handle(act: string, arg: string, el: HTMLElement) {
         ui.hqTab = 'calendario';
         save();
         go(ui.season.finished ? 'champion' : 'hq');
-        if (ui.season.finished) chip.sfx('fanfare');
+        if (ui.season.finished) {
+          chip.sfx('fanfare');
+          recordSolo('temporada');
+        }
       });
       return;
     case 'abandon-season':
@@ -1155,10 +1367,52 @@ function handle(act: string, arg: string, el: HTMLElement) {
       });
       return;
     case 'online-logout':
-      if (!confirm('Sair deste navegador? Sem o acesso salvo, você não consegue voltar às suas ligas.')) return;
-      api.logout();
-      ui.me = null;
+    case 'account-logout':
+      if (!confirm(ui.profile?.hasPassword ? 'Sair deste aparelho?' : 'Sair deste navegador? Sem e-mail e senha, você não consegue voltar às suas ligas.')) return;
+      remote(async () => {
+        await api.logout();
+        ui.me = null;
+        ui.profile = null;
+        ui.history = null;
+        ui.toast = 'Você saiu da conta.';
+        go('title');
+      });
+      return;
+    case 'login-tab':
+      ui.loginTab = arg as LoginTab;
       break;
+    case 'login-create':
+      ui.loginTab = 'criar';
+      ui.afterLogin = ui.screen === 'login' ? ui.afterLogin : ui.screen;
+      go('login');
+      loadConfig();
+      return;
+    case 'profile-tab':
+      ui.profileTab = arg as ProfileTab;
+      ui.toast = '';
+      ui.deviceLink = null;
+      if (arg === 'historico') {
+        ui.history = null;
+        api.history().then((h) => {
+          ui.history = h;
+          if (ui.screen === 'perfil') render();
+        }, () => undefined);
+      }
+      break;
+    case 'avatar-color':
+      ui.avatarDraft = { ...ui.avatarDraft, [el.dataset.part as keyof Avatar]: arg };
+      break;
+    case 'avatar-preset': {
+      const h = getTeam(arg).driver.helmet;
+      ui.avatarDraft = { base: h.base, stripe1: h.stripe1, stripe2: h.stripe2 };
+      break;
+    }
+    case 'avatar-save':
+      remote(async () => {
+        ui.profile = await api.saveProfile({ avatar: ui.avatarDraft });
+        ui.toast = 'Avatar salvo!';
+      });
+      return;
     case 'online-create': {
       const name = (root.querySelector('#league-name') as HTMLInputElement).value;
       const diff = (root.querySelector('#league-diff') as HTMLSelectElement).value;
@@ -1276,6 +1530,7 @@ function handle(act: string, arg: string, el: HTMLElement) {
       }
       attempt(() => {
         setWeekend(runRace(w!, ui.raceDraft));
+        if (ui.mode === 'quick') recordSolo('rapida');
         ui.replayDone = false;
         save();
         go('replay');
@@ -1285,6 +1540,7 @@ function handle(act: string, arg: string, el: HTMLElement) {
       // Só troca o botão: redesenhar a tela interromperia o replay e a música.
       chip.setMuted(!chip.muted);
       el.textContent = chip.muted ? '🔇 SOM' : '🔊 SOM';
+      syncPrefs();
       return;
     case 'crt': {
       const on = document.body.classList.toggle('crt');
@@ -1294,6 +1550,7 @@ function handle(act: string, arg: string, el: HTMLElement) {
       } catch {
         /* sem armazenamento */
       }
+      syncPrefs();
       return;
     }
     case 'speed':
@@ -1330,6 +1587,14 @@ export function mount(el: HTMLElement) {
     chip.sfx(SELECT_ACTS.has(t.dataset.act!) ? 'select' : 'blip');
     handle(t.dataset.act!, t.dataset.arg ?? '', t);
   });
+  root.addEventListener('submit', (e) => {
+    const form = (e.target as HTMLElement).closest<HTMLFormElement>('form[data-form]');
+    if (!form) return;
+    e.preventDefault();
+    chip.unlock();
+    handleForm(form.dataset.form!);
+  });
+  if (getToken()) void loadProfile().then(() => render());
   root.addEventListener('change', (e) => {
     const t = e.target as HTMLElement;
     if (t.dataset.act) handle(t.dataset.act, t.dataset.arg ?? '', t);
