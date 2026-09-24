@@ -78,6 +78,8 @@ export interface LeagueState {
   weekend: WeekendState | null;
   /** Último GP concluído (para replay e resultado). */
   lastWeekend?: WeekendState | null;
+  /** Índice da última sessão para a qual o lembrete de prazo já foi enviado. */
+  remindedIndex?: number;
   decisions: SessionDecisions;
   /** Aumenta a cada mudança (o cliente usa para saber se precisa redesenhar). */
   rev: number;

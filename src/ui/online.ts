@@ -10,7 +10,7 @@ import { esc } from './views';
 const TOKEN_KEY = 'f1m8.token';
 
 export interface MeResponse {
-  user: { id: string; name: string };
+  user: { id: string; name: string; google?: boolean; devices?: number; push?: number };
   leagues: { id: string; name: string; code: string; status: string; round: number; members: number }[];
 }
 
@@ -52,11 +52,44 @@ async function call<T>(path: string, body?: unknown): Promise<T> {
   return data as T;
 }
 
+export interface ServerConfig {
+  googleClientId: string | null;
+  vapidPublicKey: string;
+}
+
+export interface RankingRow {
+  name: string;
+  titles: number;
+  wins: number;
+  podiums: number;
+  points: number;
+  seasons: number;
+}
+
+export function useToken(t: string) {
+  setToken(t);
+}
+
 export const api = {
   async register(name: string) {
     const r = await call<{ token: string }>('/api/register', { name });
     setToken(r.token);
   },
+  config: () => call<ServerConfig>('/api/config'),
+  ranking: () => call<{ ranking: RankingRow[] }>('/api/ranking'),
+  /** Login (ou vínculo, se já logado) com a credencial do Google. */
+  async google(credential: string) {
+    const r = await call<{ token?: string; linked?: boolean }>('/api/login/google', { credential });
+    if (r.token) setToken(r.token);
+    return r;
+  },
+  newDeviceToken: () => call<{ token: string }>('/api/token/new', {}),
+  async rotate() {
+    const r = await call<{ token: string }>('/api/token/rotate', {});
+    setToken(r.token);
+  },
+  pushSubscribe: (subscription: unknown) => call<{ ok: boolean }>('/api/push/subscribe', { subscription }),
+  pushUnsubscribe: (endpoint: string) => call<{ ok: boolean }>('/api/push/unsubscribe', { endpoint }),
   logout: () => setToken(null),
   me: () => call<MeResponse>('/api/me'),
   create: (name: string, difficulty: string, pace: string) =>
@@ -83,13 +116,15 @@ export function fmtDeadline(iso: string | null): string {
 
 const STATUS: Record<string, string> = { lobby: 'Aguardando largada', running: 'Em andamento', finished: 'Encerrada' };
 
-export function onlineView(me: MeResponse | null, loading: boolean): string {
+export function onlineView(me: MeResponse | null, loading: boolean, deviceLink: string | null = null): string {
   if (!getToken()) {
     return `<h1>Multiplayer online</h1>
       <div class="panel"><h2>Crie seu perfil</h2>
         <p>Escolha um apelido. Seu acesso fica salvo neste navegador.</p>
         <div class="row"><input id="nick" type="text" maxlength="20" placeholder="Seu apelido" style="font:inherit;padding:8px;background:#0f1020;color:#fff;border:3px solid #5a5f9a">
-        <button class="btn" data-act="online-register">Entrar ▶</button></div></div>
+        <button class="btn" data-act="online-register">Entrar ▶</button></div>
+        <div id="google-btn" style="margin-top:14px"></div></div>
+      <div class="panel tight"><p class="muted" style="font-size:8px">Já tem perfil em outro aparelho? Lá, abra <b>Multiplayer → Conta → Levar perfil para outro aparelho</b> e abra o link aqui.</p></div>
       <button class="btn secondary" data-act="goto" data-arg="title">Voltar</button>`;
   }
   if (!me) return `<h1>Multiplayer online</h1><div class="panel">${loading ? 'Carregando...' : 'Não foi possível carregar.'}</div>
@@ -103,7 +138,7 @@ export function onlineView(me: MeResponse | null, loading: boolean): string {
     : '<p class="muted">Você ainda não está em nenhuma liga.</p>';
   const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
   return `<h1>Multiplayer online</h1>
-    <p>Olá, <span class="yellow">${esc(me.user.name)}</span>! <button class="btn small secondary" data-act="online-logout">Sair</button></p>
+    <p>Olá, <span class="yellow">${esc(me.user.name)}</span>! <button class="btn small secondary" data-act="goto" data-arg="ranking">🏆 Hall da fama</button></p>
     <div class="panel"><h2>Minhas ligas</h2><div class="parts">${leagues}</div></div>
     <div class="grid two">
       <div class="panel"><h2>Criar liga</h2>
@@ -118,7 +153,127 @@ export function onlineView(me: MeResponse | null, loading: boolean): string {
         <input id="league-code" type="text" maxlength="8" placeholder="ABC123" style="font:inherit;padding:8px;text-transform:uppercase;background:#0f1020;color:#fff;border:3px solid #5a5f9a">
         <button class="btn" data-act="online-join">Entrar ▶</button></div>
     </div>
+    ${accountPanel(me, deviceLink)}
     <button class="btn secondary" data-act="goto" data-arg="title">Voltar</button>`;
+}
+
+export function pushSupported(): boolean {
+  return 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+}
+
+export function pushState(): 'ligado' | 'bloqueado' | 'desligado' | 'indisponivel' {
+  if (!pushSupported()) return 'indisponivel';
+  if (Notification.permission === 'denied') return 'bloqueado';
+  return Notification.permission === 'granted' && localStorage.getItem('f1m8.push') === '1' ? 'ligado' : 'desligado';
+}
+
+function accountPanel(me: MeResponse, deviceLink: string | null): string {
+  const st = pushState();
+  const push =
+    st === 'indisponivel'
+      ? '<p class="muted" style="font-size:8px">Este navegador não aceita notificações. No iPhone, instale o jogo na tela de início (Compartilhar → Adicionar à Tela de Início) e abra por lá.</p>'
+      : st === 'bloqueado'
+        ? '<p class="red" style="font-size:8px">Notificações bloqueadas neste navegador. Libere nas configurações do site.</p>'
+        : st === 'ligado'
+          ? '<p class="green">🔔 Notificações ligadas neste aparelho.</p><button class="btn small secondary" data-act="push-off">Desligar notificações</button>'
+          : '<button class="btn" data-act="push-on">🔔 Ligar notificações</button><p class="muted" style="font-size:8px">Avisos de sessão aberta, lembrete 1 hora antes do prazo e resultados.</p>';
+  return `<div class="panel"><h2>Conta</h2>
+    <div class="grid two">
+      <div><h3>Notificações</h3>${push}</div>
+      <div><h3>Seus aparelhos</h3>
+        <p class="muted" style="font-size:8px">Conectado em ${me.user.devices ?? 1} aparelho(s)${me.user.google ? ' · Google vinculado ✓' : ''}.</p>
+        ${deviceLink
+          ? `<p style="font-size:8px;word-break:break-all" class="yellow">${esc(deviceLink)}</p>
+             <button class="btn small secondary" data-act="copy-invite" data-arg="${esc(deviceLink)}">Copiar link</button>
+             <p class="red" style="font-size:8px">Esse link dá acesso ao seu perfil: não compartilhe com ninguém.</p>`
+          : '<button class="btn small secondary" data-act="device-link">📱 Levar perfil para outro aparelho</button>'}
+        ${me.user.google ? '' : '<div id="google-link" style="margin-top:8px"></div>'}
+        <div class="row" style="margin-top:8px">
+          <button class="btn small secondary" data-act="rotate-token">Desconectar outros aparelhos</button>
+          <button class="btn small danger" data-act="online-logout">Sair deste aparelho</button></div>
+      </div>
+    </div></div>`;
+}
+
+export function rankingView(rows: RankingRow[] | null): string {
+  const body = !rows
+    ? '<p>Carregando...</p>'
+    : !rows.length
+      ? '<p class="muted">Ninguém terminou uma temporada online ainda. Seja o primeiro campeão!</p>'
+      : `<div class="table-wrap"><table><tr><th>#</th><th>Piloto</th><th class="num">Títulos</th><th class="num">Vitórias</th><th class="num">Pódios</th><th class="num">Pontos</th><th class="num">Temporadas</th></tr>
+        ${rows.map((r, i) => `<tr><td>${i + 1}</td><td>${i === 0 ? '👑 ' : ''}${esc(r.name)}</td><td class="num yellow">${r.titles}</td><td class="num">${r.wins}</td><td class="num">${r.podiums}</td><td class="num">${r.points}</td><td class="num">${r.seasons}</td></tr>`).join('')}
+      </table></div>`;
+  return `<h1>🏆 Hall da fama</h1><div class="panel">${body}
+    <p class="muted" style="font-size:8px;margin-top:8px">Conta as temporadas terminadas nas ligas online. Ordem: títulos, vitórias, pódios, pontos.</p></div>
+    <button class="btn secondary" data-act="goto" data-arg="online">Voltar</button>`;
+}
+
+function b64ToBytes(b64: string): Uint8Array<ArrayBuffer> {
+  const pad = '='.repeat((4 - (b64.length % 4)) % 4);
+  const raw = atob((b64 + pad).replace(/-/g, '+').replace(/_/g, '/'));
+  const out = new Uint8Array(new ArrayBuffer(raw.length));
+  for (let i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
+  return out;
+}
+
+/** Liga as notificações push neste aparelho. */
+export async function enablePush(): Promise<void> {
+  if (!pushSupported()) throw new Error('Este navegador não aceita notificações.');
+  const reg = await Promise.race([
+    navigator.serviceWorker.ready,
+    new Promise<never>((_, rej) => setTimeout(() => rej(new Error('As notificações só funcionam na versão publicada do jogo (https).')), 5000)),
+  ]);
+  const perm = await Notification.requestPermission();
+  if (perm !== 'granted') throw new Error('Permissão de notificação negada.');
+  const cfg = await api.config();
+  let sub: PushSubscription;
+  try {
+    sub = (await reg.pushManager.getSubscription()) ?? (await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64ToBytes(cfg.vapidPublicKey) }));
+  } catch {
+    throw new Error('Este navegador não deixou ligar as notificações (em janela anônima elas não funcionam).');
+  }
+  await api.pushSubscribe(sub.toJSON());
+  localStorage.setItem('f1m8.push', '1');
+}
+
+export async function disablePush(): Promise<void> {
+  localStorage.removeItem('f1m8.push');
+  if (!pushSupported()) return;
+  const reg = await navigator.serviceWorker.getRegistration();
+  const sub = await reg?.pushManager.getSubscription();
+  if (sub) {
+    await api.pushUnsubscribe(sub.endpoint).catch(() => undefined);
+    await sub.unsubscribe();
+  }
+}
+
+// ------------------------------------------------------ login com Google --
+
+interface GoogleIdApi {
+  accounts: { id: { initialize(o: { client_id: string; callback: (r: { credential: string }) => void }): void; renderButton(el: HTMLElement, o: Record<string, string>): void } };
+}
+
+let gsi: Promise<GoogleIdApi> | null = null;
+function loadGsi(): Promise<GoogleIdApi> {
+  return (gsi ??= new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = 'https://accounts.google.com/gsi/client';
+    s.async = true;
+    s.onload = () => resolve((window as unknown as { google: GoogleIdApi }).google);
+    s.onerror = () => {
+      gsi = null;
+      reject(new Error('Não foi possível carregar o login do Google.'));
+    };
+    document.head.appendChild(s);
+  }));
+}
+
+/** Desenha o botão "Entrar com Google" no elemento, se o servidor tiver o login ativado. */
+export async function mountGoogleButton(el: HTMLElement | null, clientId: string | null, onCredential: (c: string) => void) {
+  if (!el || !clientId) return;
+  const g = await loadGsi();
+  g.accounts.id.initialize({ client_id: clientId, callback: (r) => onCredential(r.credential) });
+  g.accounts.id.renderButton(el, { theme: 'filled_black', size: 'large', text: el.id === 'google-link' ? 'continue_with' : 'signin_with', shape: 'rectangular' });
 }
 
 export function lobbyView(v: LeagueView): string {

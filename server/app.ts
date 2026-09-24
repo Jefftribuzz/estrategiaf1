@@ -2,20 +2,31 @@ import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypt
 import { readFile, stat } from 'node:fs/promises';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { extname, join, resolve, sep } from 'node:path';
+import { getTeam } from '../src/engine/data/teams';
+import { getTrack } from '../src/engine/data/tracks';
 import {
   advance,
   createLeague,
+  currentSession,
+  currentSessionIndex,
   forceSession,
   joinLeague,
   leagueBuy,
   leaveLeague,
+  nextDeadline,
+  pendingHumans,
   startLeague,
   submitDecision,
   viewFor,
   type LeagueState,
   type Pace,
 } from '../src/engine/league';
+import { standings, type SeasonState } from '../src/engine/season';
 import type { Difficulty, SessionId } from '../src/engine/types';
+import { SESSION_LABEL } from '../src/engine/weekend';
+import type { GoogleVerifier } from './google';
+import { isSubscription, loadVapid, webPushSender, type PushPayload, type PushSender, type PushSubscriptionJSON, type Vapid } from './push';
+import { RateLimiter } from './ratelimit';
 import { KeyedMutex, type Store } from './store';
 
 // API do multiplayer. Estado autoritativo no servidor: o cliente só envia
@@ -24,9 +35,23 @@ import { KeyedMutex, type Store } from './store';
 interface User {
   id: string;
   name: string;
-  tokenHash: string;
+  /** Hashes dos tokens de acesso válidos (um por aparelho). */
+  tokenHashes: string[];
+  /** Formato antigo (um só token). */
+  tokenHash?: string;
   leagues: string[];
   createdAt: string;
+  googleSub?: string;
+  push?: PushSubscriptionJSON[];
+}
+
+export interface RankingEntry {
+  name: string;
+  titles: number;
+  wins: number;
+  podiums: number;
+  points: number;
+  seasons: number;
 }
 
 export interface AppOptions {
@@ -34,6 +59,13 @@ export interface AppOptions {
   now?: () => Date;
   /** Pasta com o jogo compilado (dist/) para servir junto com a API. */
   staticDir?: string;
+  /** Login com Google: Client ID do Google Cloud (opcional). */
+  googleClientId?: string;
+  googleVerify?: GoogleVerifier;
+  /** Envio de notificações (padrão: Web Push com VAPID). */
+  pushSend?: PushSender;
+  /** Atrás de proxy (Render, Fly...): usa X-Forwarded-For para o IP. */
+  trustProxy?: boolean;
 }
 
 class HttpError extends Error {
@@ -43,6 +75,9 @@ class HttpError extends Error {
 }
 
 const MAX_BODY = 64 * 1024;
+const MAX_TOKENS = 10;
+const MAX_PUSH = 5;
+const REMIND_BEFORE_MS = 60 * 60_000;
 const CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const DIFFICULTIES: Difficulty['id'][] = ['facil', 'normal', 'dificil'];
 const SESSIONS: SessionId[] = ['teste', 'classificacao', 'corrida'];
@@ -55,6 +90,27 @@ const MIME: Record<string, string> = {
   '.png': 'image/png',
   '.ico': 'image/x-icon',
   '.webmanifest': 'application/manifest+json',
+};
+
+const SECURITY_HEADERS: Record<string, string> = {
+  'content-security-policy': [
+    "default-src 'self'",
+    "script-src 'self' https://accounts.google.com",
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://accounts.google.com",
+    "font-src 'self' https://fonts.gstatic.com",
+    "img-src 'self' data: https://*.googleusercontent.com",
+    "connect-src 'self' https://accounts.google.com",
+    'frame-src https://accounts.google.com',
+    "worker-src 'self'",
+    "manifest-src 'self'",
+    "base-uri 'self'",
+    "form-action 'self'",
+    "frame-ancestors 'none'",
+  ].join('; '),
+  'x-content-type-options': 'nosniff',
+  'referrer-policy': 'strict-origin-when-cross-origin',
+  'permissions-policy': 'camera=(), microphone=(), geolocation=()',
+  'cross-origin-opener-policy': 'same-origin-allow-popups',
 };
 
 const sha256 = (s: string) => createHash('sha256').update(s).digest('hex');
@@ -82,27 +138,84 @@ async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> 
   }
 }
 
-function send(res: ServerResponse, status: number, body: unknown) {
-  const data = JSON.stringify(body);
-  res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
-  res.end(data);
+function send(res: ServerResponse, status: number, body: unknown, extra: Record<string, string> = {}) {
+  res.writeHead(status, { ...SECURITY_HEADERS, 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', ...extra });
+  res.end(JSON.stringify(body));
 }
+
+function tokenOk(user: User, secret: string): boolean {
+  const a = Buffer.from(sha256(secret));
+  const hashes = user.tokenHashes ?? (user.tokenHash ? [user.tokenHash] : []);
+  let ok = false;
+  for (const h of hashes) {
+    const b = Buffer.from(h);
+    if (a.length === b.length && timingSafeEqual(a, b)) ok = true;
+  }
+  return ok;
+}
+
+/** Data/hora de um instante no fuso da liga, em português. */
+function fmtIn(date: Date, tz: string): string {
+  return date.toLocaleString('pt-BR', { timeZone: tz, weekday: 'short', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+}
+
+type Note = { userIds: string[]; payload: PushPayload };
 
 export function createApp(opts: AppOptions) {
   const { store } = opts;
   const now = opts.now ?? (() => new Date());
   const locks = new KeyedMutex();
+  const limiter = new RateLimiter(() => now().getTime());
+  let vapid: Promise<Vapid> | null = null;
+  const getVapid = () => (vapid ??= loadVapid(store));
+  let sender: PushSender | null = opts.pushSend ?? null;
+
+  function ipOf(req: IncomingMessage): string {
+    if (opts.trustProxy) {
+      const fwd = req.headers['x-forwarded-for'];
+      const first = (Array.isArray(fwd) ? fwd[0] : fwd)?.split(',')[0]?.trim();
+      if (first) return first;
+    }
+    return req.socket.remoteAddress ?? '?';
+  }
+
+  function limit(key: string, max: number, windowMs: number) {
+    if (!limiter.take(key, max, windowMs)) throw new HttpError(429, 'Muitas requisições. Espere um pouco e tente de novo.');
+  }
 
   async function auth(req: IncomingMessage): Promise<User> {
     const h = req.headers.authorization ?? '';
     const m = /^Bearer ([\w-]+)\.([\w-]+)$/.exec(h);
     if (!m) throw new HttpError(401, 'Faça login.');
     const user = await store.get<User>(`user:${m[1]}`);
-    if (!user) throw new HttpError(401, 'Sessão inválida.');
-    const a = Buffer.from(sha256(m[2]));
-    const b = Buffer.from(user.tokenHash);
-    if (a.length !== b.length || !timingSafeEqual(a, b)) throw new HttpError(401, 'Sessão inválida.');
-    return user;
+    if (!user || !tokenOk(user, m[2])) throw new HttpError(401, 'Sessão inválida.');
+    return { ...user, tokenHashes: user.tokenHashes ?? (user.tokenHash ? [user.tokenHash] : []) };
+  }
+
+  async function optionalAuth(req: IncomingMessage): Promise<User | null> {
+    if (!req.headers.authorization) return null;
+    try {
+      return await auth(req);
+    } catch {
+      return null;
+    }
+  }
+
+  function updateUser(id: string, fn: (u: User) => User): Promise<User> {
+    return locks.run(`user:${id}`, async () => {
+      const u = await store.get<User>(`user:${id}`);
+      if (!u) throw new HttpError(404, 'Usuário não encontrado.');
+      const next = fn({ ...u, tokenHashes: u.tokenHashes ?? (u.tokenHash ? [u.tokenHash] : []), tokenHash: undefined });
+      await store.put(`user:${id}`, next);
+      return next;
+    });
+  }
+
+  /** Emite um token novo para o usuário (um por aparelho, até MAX_TOKENS). */
+  async function issueToken(userId: string, replaceAll = false): Promise<string> {
+    const secret = randomBytes(24).toString('base64url');
+    await updateUser(userId, (u) => ({ ...u, tokenHashes: replaceAll ? [sha256(secret)] : [...u.tokenHashes, sha256(secret)].slice(-MAX_TOKENS) }));
+    return `${userId}.${secret}`;
   }
 
   async function loadLeague(id: string): Promise<LeagueState> {
@@ -111,18 +224,137 @@ export function createApp(opts: AppOptions) {
     return l;
   }
 
-  /** Carrega, avança sessões vencidas, aplica a mudança e grava, tudo sob trava. */
-  function mutate(id: string, fn: (l: LeagueState) => LeagueState): Promise<LeagueState> {
-    return locks.run(`league:${id}`, async () => {
-      const before = await loadLeague(id);
-      let l = advance(before, now());
-      l = fn(l);
-      if (l !== before) await store.put(`league:${id}`, l);
-      return l;
+  // ------------------------------------------------------- notificações ---
+
+  async function notify(notes: Note[]) {
+    if (!notes.length) return;
+    if (!sender) sender = webPushSender(await getVapid());
+    for (const n of notes) {
+      for (const userId of n.userIds) {
+        const u = await store.get<User>(`user:${userId}`);
+        const dead: string[] = [];
+        for (const sub of u?.push ?? []) {
+          try {
+            await sender(sub, n.payload);
+          } catch (e) {
+            const code = (e as { statusCode?: number }).statusCode;
+            if (code === 404 || code === 410) dead.push(sub.endpoint);
+          }
+        }
+        if (dead.length) await updateUser(userId, (x) => ({ ...x, push: (x.push ?? []).filter((s) => !dead.includes(s.endpoint)) }));
+      }
+    }
+  }
+
+  /** O que mudou na liga e merece notificação. */
+  function diffNotes(before: LeagueState, after: LeagueState): Note[] {
+    const users = Object.values(after.humans).map((h) => h.userId);
+    const url = `./?abrir=${after.id}`;
+    const tag = `liga-${after.id}`;
+    const deadline = nextDeadline(after);
+    const session = currentSession(after);
+    const openMsg = session && deadline ? `${SESSION_LABEL[session]} do GP de ${getTrack(after.calendar[after.round]).name} aberta. Prazo: ${fmtIn(deadline, after.timezone)}.` : '';
+    if (before.status === 'lobby' && after.status === 'running') {
+      return [{ userIds: users, payload: { title: `🏁 ${after.name}: a temporada começou!`, body: openMsg, url, tag } }];
+    }
+    if (after.results.length > before.results.length) {
+      const r = after.results[after.results.length - 1];
+      const winner = getTeam(r.order[0].teamId).driver.name;
+      const table = standings({ results: after.results, points: after.points } as SeasonState);
+      return Object.entries(after.humans).map(([teamId, h]) => {
+        const me = r.order.find((o) => o.teamId === teamId)!;
+        const pos = me.status === 'dnf' ? 'abandonou' : `chegou em P${me.position}`;
+        const champ = table.find((x) => x.teamId === teamId)!;
+        const body =
+          after.status === 'finished'
+            ? `${winner} venceu a última prova. Campeão: ${getTeam(table[0].teamId).driver.name}. Você terminou em P${champ.position}.`
+            : `${winner} venceu. Você ${pos}. ${openMsg}`;
+        return {
+          userIds: [h.userId],
+          payload: { title: after.status === 'finished' ? `🏆 ${after.name}: fim de temporada!` : `🏁 Resultado: GP de ${getTrack(r.trackId).name}`, body, url, tag },
+        };
+      });
+    }
+    if (currentSessionIndex(after) > currentSessionIndex(before) && openMsg) {
+      return [{ userIds: users, payload: { title: `⏱ ${after.name}`, body: openMsg, url, tag } }];
+    }
+    return [];
+  }
+
+  async function recordRanking(l: LeagueState) {
+    await locks.run('ranking', async () => {
+      const doc = (await store.get<{ entries: Record<string, RankingEntry> }>('ranking')) ?? { entries: {} };
+      const table = standings({ results: l.results, points: l.points } as SeasonState);
+      for (const [teamId, h] of Object.entries(l.humans)) {
+        const row = table.find((r) => r.teamId === teamId)!;
+        const e = doc.entries[h.userId] ?? { name: h.name, titles: 0, wins: 0, podiums: 0, points: 0, seasons: 0 };
+        doc.entries[h.userId] = {
+          name: h.name,
+          titles: e.titles + (row.position === 1 ? 1 : 0),
+          wins: e.wins + row.wins,
+          podiums: e.podiums + row.podiums,
+          points: e.points + row.points,
+          seasons: e.seasons + 1,
+        };
+      }
+      await store.put('ranking', doc);
     });
   }
 
-  /** Erros de regra do jogo viram 400 com a mensagem para o jogador. */
+  /** Carrega, avança sessões vencidas, aplica a mudança, grava e notifica. */
+  async function mutate(id: string, fn: (l: LeagueState) => LeagueState, extra: (l: LeagueState) => Note[] = () => []): Promise<LeagueState> {
+    let notes: Note[] = [];
+    let finished = false;
+    const result = await locks.run(`league:${id}`, async () => {
+      const before = await loadLeague(id);
+      let l = advance(before, now());
+      l = fn(l);
+      const more = extra(l);
+      if (more.length) l = { ...l, remindedIndex: currentSessionIndex(l) };
+      if (l !== before) await store.put(`league:${id}`, l);
+      notes = [...diffNotes(before, l), ...more];
+      finished = before.status !== 'finished' && l.status === 'finished';
+      return l;
+    });
+    if (finished) await recordRanking(result);
+    await notify(notes).catch((e) => console.error('push', e));
+    return result;
+  }
+
+  /** Lembrete 1h antes do prazo para quem ainda não decidiu. */
+  function reminders(l: LeagueState): Note[] {
+    const deadline = nextDeadline(l);
+    const session = currentSession(l);
+    if (!deadline || !session) return [];
+    const idx = currentSessionIndex(l);
+    if ((l.remindedIndex ?? -1) >= idx) return [];
+    const left = deadline.getTime() - now().getTime();
+    if (left > REMIND_BEFORE_MS || left <= 0) return [];
+    const users = pendingHumans(l).map((teamId) => l.humans[teamId].userId);
+    if (!users.length) return [];
+    return [{
+      userIds: users,
+      payload: {
+        title: `⏰ ${l.name}: falta 1 hora!`,
+        body: `Envie sua decisão para ${SESSION_LABEL[session]} do GP de ${getTrack(l.calendar[l.round]).name} até ${fmtIn(deadline, l.timezone)}. Senão, o engenheiro decide.`,
+        url: `./?abrir=${l.id}`,
+        tag: `liga-${l.id}`,
+      },
+    }];
+  }
+
+  /** Relógio do servidor: roda sessões vencidas e manda lembretes (chamar a cada minuto). */
+  async function tick() {
+    const index = (await store.get<{ ids: string[] }>('index:leagues')) ?? { ids: [] };
+    for (const id of index.ids) {
+      const l = await store.get<LeagueState>(`league:${id}`);
+      if (!l || l.status !== 'running') continue;
+      await mutate(id, (x) => x, reminders).catch((e) => console.error('tick', id, e));
+    }
+  }
+
+  // ------------------------------------------------------------ rotas -----
+
   function wrap(fn: () => LeagueState): LeagueState {
     try {
       return fn();
@@ -133,10 +365,7 @@ export function createApp(opts: AppOptions) {
   }
 
   async function addLeagueToUser(user: User, leagueId: string) {
-    await locks.run(`user:${user.id}`, async () => {
-      const u = (await store.get<User>(`user:${user.id}`))!;
-      if (!u.leagues.includes(leagueId)) await store.put(`user:${u.id}`, { ...u, leagues: [...u.leagues, leagueId] });
-    });
+    await updateUser(user.id, (u) => (u.leagues.includes(leagueId) ? u : { ...u, leagues: [...u.leagues, leagueId] }));
   }
 
   async function newCode(): Promise<string> {
@@ -148,17 +377,68 @@ export function createApp(opts: AppOptions) {
     throw new HttpError(500, 'Não foi possível gerar o código.');
   }
 
+  async function createUser(name: string, googleSub?: string): Promise<{ token: string; user: User }> {
+    const id = randomUUID();
+    const secret = randomBytes(24).toString('base64url');
+    const user: User = { id, name, tokenHashes: [sha256(secret)], leagues: [], createdAt: now().toISOString(), googleSub };
+    await store.put(`user:${id}`, user);
+    if (googleSub) await store.put(`google:${googleSub}`, { userId: id });
+    return { token: `${id}.${secret}`, user };
+  }
+
   async function api(req: IncomingMessage, res: ServerResponse, path: string) {
     const method = req.method ?? 'GET';
+    const ip = ipOf(req);
+    limit(`api:${ip}`, 600, 10 * 60_000);
+
+    if (method === 'GET' && path === '/api/config') {
+      return send(res, 200, { googleClientId: opts.googleClientId ?? null, vapidPublicKey: (await getVapid()).publicKey });
+    }
+
+    if (method === 'GET' && path === '/api/ranking') {
+      const doc = (await store.get<{ entries: Record<string, RankingEntry> }>('ranking')) ?? { entries: {} };
+      const list = Object.values(doc.entries)
+        .sort((a, b) => b.titles - a.titles || b.wins - a.wins || b.podiums - a.podiums || b.points - a.points)
+        .slice(0, 50);
+      return send(res, 200, { ranking: list });
+    }
 
     if (method === 'POST' && path === '/api/register') {
+      limit(`register:${ip}`, 5, 60 * 60_000);
       const body = await readJson(req);
-      const name = cleanName(body.name, 20, 'seu nome');
-      const id = randomUUID();
-      const secret = randomBytes(24).toString('base64url');
-      const user: User = { id, name, tokenHash: sha256(secret), leagues: [], createdAt: now().toISOString() };
-      await store.put(`user:${id}`, user);
-      return send(res, 200, { token: `${id}.${secret}`, user: { id, name } });
+      const { token, user } = await createUser(cleanName(body.name, 20, 'seu nome'));
+      return send(res, 200, { token, user: { id: user.id, name: user.name } });
+    }
+
+    if (method === 'POST' && path === '/api/login/google') {
+      limit(`google:${ip}`, 20, 60 * 60_000);
+      if (!opts.googleVerify) throw new HttpError(404, 'Login com Google não está ativado neste servidor.');
+      const body = await readJson(req);
+      let identity;
+      try {
+        identity = await opts.googleVerify(String(body.credential ?? ''));
+      } catch (e) {
+        throw new HttpError(401, (e as Error).message);
+      }
+      const linked = await store.get<{ userId: string }>(`google:${identity.sub}`);
+      const current = await optionalAuth(req);
+      if (current) {
+        // Já logado por apelido: vincula a conta Google a este perfil.
+        if (linked && linked.userId !== current.id) throw new HttpError(409, 'Essa conta Google já está vinculada a outro perfil.');
+        if (!linked) {
+          await store.put(`google:${identity.sub}`, { userId: current.id });
+          await updateUser(current.id, (u) => ({ ...u, googleSub: identity.sub }));
+        }
+        return send(res, 200, { linked: true, user: { id: current.id, name: current.name } });
+      }
+      if (linked) {
+        const token = await issueToken(linked.userId);
+        const u = (await store.get<User>(`user:${linked.userId}`))!;
+        return send(res, 200, { token, user: { id: u.id, name: u.name } });
+      }
+      const name = cleanName(body.name ?? identity.name ?? 'Piloto', 20, 'seu nome');
+      const { token, user } = await createUser(name, identity.sub);
+      return send(res, 200, { token, user: { id: user.id, name: user.name } });
     }
 
     const user = await auth(req);
@@ -169,10 +449,38 @@ export function createApp(opts: AppOptions) {
         const l = await store.get<LeagueState>(`league:${id}`);
         if (l) leagues.push({ id: l.id, name: l.name, code: l.code, status: l.status, round: l.round, members: Object.keys(l.humans).length });
       }
-      return send(res, 200, { user: { id: user.id, name: user.name }, leagues });
+      return send(res, 200, { user: { id: user.id, name: user.name, google: !!user.googleSub, devices: user.tokenHashes.length, push: (user.push ?? []).length }, leagues });
+    }
+
+    if (method === 'POST' && path === '/api/token/new') {
+      // Link para levar o perfil a outro aparelho (token extra).
+      return send(res, 200, { token: await issueToken(user.id) });
+    }
+
+    if (method === 'POST' && path === '/api/token/rotate') {
+      // Desconecta todos os outros aparelhos.
+      return send(res, 200, { token: await issueToken(user.id, true) });
+    }
+
+    if (method === 'POST' && path === '/api/push/subscribe') {
+      const body = await readJson(req);
+      if (!isSubscription(body.subscription)) throw new HttpError(400, 'Inscrição de notificação inválida.');
+      const sub = body.subscription;
+      const clean = { endpoint: sub.endpoint, keys: { p256dh: sub.keys.p256dh, auth: sub.keys.auth } };
+      await updateUser(user.id, (u) => ({ ...u, push: [...(u.push ?? []).filter((s) => s.endpoint !== clean.endpoint), clean].slice(-MAX_PUSH) }));
+      await notify([{ userIds: [user.id], payload: { title: '🔔 Notificações ligadas!', body: 'Você vai receber avisos de sessões, prazos e resultados.', tag: 'teste' } }]).catch(() => undefined);
+      return send(res, 200, { ok: true });
+    }
+
+    if (method === 'POST' && path === '/api/push/unsubscribe') {
+      const body = await readJson(req);
+      const endpoint = String(body.endpoint ?? '');
+      await updateUser(user.id, (u) => ({ ...u, push: (u.push ?? []).filter((s) => s.endpoint !== endpoint) }));
+      return send(res, 200, { ok: true });
     }
 
     if (method === 'POST' && path === '/api/leagues') {
+      limit(`create:${user.id}`, 10, 60 * 60_000);
       const body = await readJson(req);
       const difficulty = DIFFICULTIES.includes(body.difficulty as Difficulty['id']) ? (body.difficulty as Difficulty['id']) : 'normal';
       const pace: Pace = body.pace === 'rapido' ? 'rapido' : 'diario';
@@ -187,11 +495,16 @@ export function createApp(opts: AppOptions) {
       }
       await store.put(`league:${id}`, league);
       await store.put(`code:${code}`, { leagueId: id });
+      await locks.run('index:leagues', async () => {
+        const idx = (await store.get<{ ids: string[] }>('index:leagues')) ?? { ids: [] };
+        await store.put('index:leagues', { ids: [...idx.ids, id] });
+      });
       await addLeagueToUser(user, id);
       return send(res, 200, viewFor(league, user.id));
     }
 
     if (method === 'POST' && path === '/api/join') {
+      limit(`join:${ip}`, 30, 60 * 60_000);
       const body = await readJson(req);
       const code = String(body.code ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '');
       const ref = await store.get<{ leagueId: string }>(`code:${code}`);
@@ -241,7 +554,7 @@ export function createApp(opts: AppOptions) {
     throw new HttpError(404, 'Rota não encontrada.');
   }
 
-  async function serveStatic(res: ServerResponse, path: string) {
+  async function serveStatic(req: IncomingMessage, res: ServerResponse, path: string) {
     if (!opts.staticDir) throw new HttpError(404, 'Não encontrado.');
     const root = resolve(opts.staticDir);
     let file = resolve(join(root, decodeURIComponent(path)));
@@ -252,24 +565,28 @@ export function createApp(opts: AppOptions) {
       file = join(root, 'index.html');
     }
     const data = await readFile(file);
+    const https = opts.trustProxy && req.headers['x-forwarded-proto'] === 'https';
     res.writeHead(200, {
+      ...SECURITY_HEADERS,
+      ...(https ? { 'strict-transport-security': 'max-age=31536000' } : {}),
       'content-type': MIME[extname(file)] ?? 'application/octet-stream',
       'cache-control': file.includes(`${sep}assets${sep}`) ? 'public, max-age=31536000, immutable' : 'no-cache',
     });
-    res.end(data);
+    res.end(req.method === 'HEAD' ? undefined : data);
   }
 
-  return async function handler(req: IncomingMessage, res: ServerResponse) {
+  const handler = async function handler(req: IncomingMessage, res: ServerResponse) {
     const url = new URL(req.url ?? '/', 'http://x');
     try {
       if (url.pathname === '/health') return send(res, 200, { ok: true });
       if (url.pathname.startsWith('/api/')) return await api(req, res, url.pathname);
       if (req.method !== 'GET' && req.method !== 'HEAD') throw new HttpError(405, 'Método não suportado.');
-      return await serveStatic(res, url.pathname);
+      return await serveStatic(req, res, url.pathname);
     } catch (e) {
-      if (e instanceof HttpError) return send(res, e.status, { error: e.message });
+      if (e instanceof HttpError) return send(res, e.status, { error: e.message }, e.status === 429 ? { 'retry-after': '60' } : {});
       console.error(e);
       return send(res, 500, { error: 'Erro interno.' });
     }
   };
+  return Object.assign(handler, { tick });
 }

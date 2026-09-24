@@ -35,13 +35,28 @@ import {
 } from '../engine/season';
 import { championView, hqView, seasonHeader, type HqTab } from './seasonViews';
 import type { LeagueView } from '../engine/league';
-import { api, getToken, leagueSessionPanel, lobbyView, onlineView, type MeResponse } from './online';
+import {
+  api,
+  disablePush,
+  enablePush,
+  getToken,
+  leagueSessionPanel,
+  lobbyView,
+  mountGoogleButton,
+  onlineView,
+  pushState,
+  rankingView,
+  useToken,
+  type MeResponse,
+  type RankingRow,
+  type ServerConfig,
+} from './online';
 import { chip } from './audio';
 import { Replay } from './replay';
 import { carSprite, drawTrack, helmetSprite } from './sprites';
 import { bar, esc, forecastCard, partPicker, tyreBadge } from './views';
 
-type Screen = 'title' | 'help' | 'team' | 'track' | 'season-setup' | 'hq' | 'champion' | 'hub' | 'practice' | 'quali' | 'race' | 'replay' | 'results' | 'online' | 'lobby';
+type Screen = 'title' | 'help' | 'team' | 'track' | 'season-setup' | 'hq' | 'champion' | 'hub' | 'practice' | 'quali' | 'race' | 'replay' | 'results' | 'online' | 'lobby' | 'ranking';
 type Mode = 'quick' | 'season' | 'league';
 type PartKind = 'aero' | 'engine' | 'tyre';
 
@@ -67,6 +82,9 @@ interface UiState {
   meLoading: boolean;
   toast: string;
   busy: boolean;
+  config: ServerConfig | null;
+  deviceLink: string | null;
+  ranking: RankingRow[] | null;
 }
 
 const SAVE_KEY = 'f1m8.save.v1';
@@ -96,6 +114,9 @@ const ui: UiState = {
   meLoading: false,
   toast: '',
   busy: false,
+  config: null,
+  deviceLink: null,
+  ranking: null,
 };
 
 let root: HTMLElement;
@@ -649,7 +670,10 @@ function leagueHq(): string {
   const v = ui.league!;
   const s = ui.season!;
   const extra = v.lastWeekend ? '<button class="btn secondary" data-act="league-last">Último GP: resultado e replay</button>' : '';
-  const panel = v.session ? leagueSessionPanel(v, SESSION_LABEL[v.session]) : '';
+  const bell = pushState() === 'desligado'
+    ? '<div class="panel tight row between"><span>🔔 Ligue as notificações para receber prazos e resultados no celular.</span><button class="btn small" data-act="push-on">Ligar</button></div>'
+    : '';
+  const panel = bell + (v.session ? leagueSessionPanel(v, SESSION_LABEL[v.session]) : '');
   return panel + hqView(s, ui.hqTab, { shopOpen: !!s.weekend && s.weekend.completed === 0, extra, online: true });
 }
 
@@ -709,6 +733,31 @@ function remote(fn: () => Promise<void>) {
       ui.busy = false;
       render();
     });
+}
+
+function loadConfig() {
+  if (ui.config) return;
+  api
+    .config()
+    .then((c) => {
+      ui.config = c;
+      if (ui.screen === 'online') mountGoogle();
+    })
+    .catch(() => undefined);
+}
+
+function mountGoogle() {
+  const el = root.querySelector<HTMLElement>('#google-btn') ?? root.querySelector<HTMLElement>('#google-link');
+  if (!el || !ui.config?.googleClientId || el.childElementCount) return;
+  mountGoogleButton(el, ui.config.googleClientId, (credential) =>
+    remote(async () => {
+      const r = await api.google(credential);
+      ui.toast = r.linked ? 'Conta Google vinculada ao seu perfil!' : 'Login com Google feito!';
+      ui.me = await api.me();
+      const code = pendingInvite();
+      if (code) await joinByCode(code);
+    }),
+  ).catch(() => undefined);
 }
 
 function loadMe() {
@@ -816,11 +865,12 @@ function render() {
     'season-setup': seasonSetupView,
     hq: () => (ui.mode === 'league' ? leagueHq() : hqView(ui.season!, ui.hqTab)),
     champion: () => championView(ui.season!),
-    online: () => onlineView(ui.me, ui.meLoading),
+    online: () => onlineView(ui.me, ui.meLoading, ui.deviceLink),
+    ranking: () => rankingView(ui.ranking),
     lobby: () => (ui.league ? lobbyView(ui.league) : onlineView(ui.me, false)),
     practice: practiceView, quali: qualiView, race: raceView, replay: replayView, results: resultsView,
   };
-  const needsWeekend = !['title', 'help', 'team', 'track', 'season-setup', 'hq', 'champion', 'online', 'lobby'].includes(ui.screen);
+  const needsWeekend = !['title', 'help', 'team', 'track', 'season-setup', 'hq', 'champion', 'online', 'lobby', 'ranking'].includes(ui.screen);
   if (needsWeekend && !ui.weekend) ui.screen = ui.season && ui.mode === 'season' ? 'hq' : 'title';
   if (['hq', 'champion'].includes(ui.screen) && !ui.season) ui.screen = 'title';
   // A animação de entrada só toca na troca de tela (go), não a cada redesenho.
@@ -833,6 +883,7 @@ function render() {
   if (['title', 'help', 'team', 'track'].includes(ui.screen)) chip.playTheme();
   else chip.stopTheme();
   root.querySelectorAll<HTMLCanvasElement>('canvas[data-track]').forEach((c) => drawTrack(c, getTrack(c.dataset.track!)));
+  if (ui.screen === 'online') mountGoogle();
   if (ui.screen === 'replay' && !replay) {
     replay = new Replay(
       root.querySelector('#replay-canvas')!,
@@ -866,8 +917,22 @@ function handle(act: string, arg: string, el: HTMLElement) {
           ui.season = null;
           ui.weekend = null;
         }
+        ui.deviceLink = null;
         go('online');
+        loadConfig();
         loadMe();
+        return;
+      }
+      if (arg === 'ranking') {
+        ui.ranking = null;
+        go('ranking');
+        api.ranking().then((r) => {
+          ui.ranking = r.ranking;
+          if (ui.screen === 'ranking') render();
+        }, (e: Error) => {
+          ui.error = e.message;
+          render();
+        });
         return;
       }
       go(arg as Screen);
@@ -1046,6 +1111,34 @@ function handle(act: string, arg: string, el: HTMLElement) {
       });
       return;
     }
+    case 'push-on':
+      remote(async () => {
+        await enablePush();
+        ui.toast = 'Notificações ligadas neste aparelho!';
+      });
+      return;
+    case 'push-off':
+      remote(async () => {
+        await disablePush();
+        ui.toast = 'Notificações desligadas.';
+      });
+      return;
+    case 'device-link':
+      remote(async () => {
+        const { token } = await api.newDeviceToken();
+        ui.deviceLink = `${location.origin}${location.pathname}?perfil=${encodeURIComponent(token)}`;
+        ui.me = await api.me();
+      });
+      return;
+    case 'rotate-token':
+      if (!confirm('Desconectar todos os outros aparelhos? Eles vão precisar de um link novo para entrar.')) return;
+      remote(async () => {
+        await api.rotate();
+        ui.deviceLink = null;
+        ui.me = await api.me();
+        ui.toast = 'Pronto: só este aparelho continua conectado.';
+      });
+      return;
     case 'online-logout':
       if (!confirm('Sair deste navegador? Sem o acesso salvo, você não consegue voltar às suas ligas.')) return;
       api.logout();
@@ -1223,9 +1316,26 @@ export function mount(el: HTMLElement) {
     const t = e.target as HTMLElement;
     if (t.dataset.act) handle(t.dataset.act, t.dataset.arg ?? '', t);
   });
+  const params = new URLSearchParams(location.search);
+  const profile = params.get('perfil');
+  const open = params.get('abrir');
+  if (profile && /^[\w-]+\.[\w-]+$/.test(profile)) {
+    // Link "levar perfil para outro aparelho".
+    useToken(profile);
+    history.replaceState(null, '', location.pathname);
+    ui.screen = 'online';
+    ui.toast = 'Perfil conectado neste aparelho!';
+    loadConfig();
+    loadMe();
+  } else if (open && getToken()) {
+    // Clique numa notificação: abre a liga.
+    history.replaceState(null, '', location.pathname);
+    openLeague(open);
+  }
   const code = pendingInvite();
   if (code) {
     ui.screen = 'online';
+    loadConfig();
     if (getToken()) remote(() => joinByCode(code));
   }
   startPolling();
