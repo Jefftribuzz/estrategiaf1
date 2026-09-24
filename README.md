@@ -48,6 +48,23 @@ npm run build    # versão estática em dist/ (pode ir para GitHub Pages)
 - Sprites com sombreamento, transições entre telas e filtro opcional de TV
   antiga (botão 📺 CRT). O som liga e desliga no botão 🔊.
 
+## Fase 3: temporada
+
+- **Temporada de 10 GPs** (Baku → Interlagos), um a cada 3 dias, com
+  campeonato de pilotos (10-8-6-5-4-3-2-1) e tela de campeão.
+- **QG da equipe**: calendário, campeonato GP a GP, garagem, desenvolvimento
+  e finanças.
+- **Economia**: caixa inicial de $150M, patrocínio de $12M por GP e prêmio por
+  posição. Peças compradas ficam na garagem e não são pagas de novo.
+- **Desgaste**: cada motor tem vida útil em corridas e, depois dela, o risco de
+  quebra triplica. Um acidente destrói a asa que estava no carro.
+- **Desenvolvimento**: 5 áreas (retas, curvas lentas, curvas rápidas,
+  confiabilidade, pneus) com 5 níveis cada. As rivais investem os prêmios delas.
+- **Acelerar**: "⏩ Pular dia" (o engenheiro decide a sessão) e
+  "⏭ Simular fim de semana", na temporada e na corrida rápida.
+- **Traçados reais**: os circuitos vêm das coordenadas reais
+  ([bacinger/f1-circuits](https://github.com/bacinger/f1-circuits), MIT).
+
 ## Arquitetura
 
 ```
@@ -60,6 +77,7 @@ src/engine/   Motor puro em TypeScript, sem DOM e determinístico (semente).
   ai.ts           decisões dos bots
   weather.ts      clima e previsão
   weekend.ts      orquestração do fim de semana
+  season.ts       temporada, economia, garagem e desenvolvimento
 src/ui/       Interface (telas, sprites, replay, áudio chiptune)
 tests/        Vitest
 ```
@@ -68,8 +86,7 @@ tests/        Vitest
 
 1. ~~MVP solo~~ ✔
 2. ~~Visual e som~~ ✔
-3. Temporada: 10 GPs, campeonato, desgaste de peças entre corridas, orçamento
-   da temporada e desenvolvimento
+3. ~~Temporada~~ ✔
 4. Multiplayer: login, ligas privadas, sessões agendadas no servidor e
    notificações
 5. Polimento: balanceamento, ranking e celular (PWA)

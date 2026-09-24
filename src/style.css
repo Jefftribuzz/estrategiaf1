@@ -129,6 +129,7 @@ p { margin: 0 0 10px; }
 .part.selected { border-color: var(--yellow); background: #34386b; }
 .part .id { color: var(--yellow); font-size: 11px; }
 .part .price { color: var(--green); }
+.part > .btn { white-space: nowrap; }
 .part .desc { color: var(--muted); font-size: 8px; margin-top: 4px; }
 .part .stats { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 6px; font-size: 8px; }
 
@@ -191,7 +192,7 @@ label { display: block; margin-bottom: 4px; color: var(--muted); font-size: 8px;
   .title-screen h1 { font-size: 18px; }
   .replay { grid-template-columns: 1fr; }
   .part { grid-template-columns: 34px 1fr; }
-  .part .price { grid-column: 2; }
+  .part .price, .part > .btn, .part > .green { grid-column: 1 / -1; justify-self: start; }
   .stint { grid-template-columns: 1fr; }
 }
 

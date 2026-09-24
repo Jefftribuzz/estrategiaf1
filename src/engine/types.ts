@@ -107,6 +107,8 @@ export interface EnginePart {
   consumption: number;
   heatTolerance: number;
   altitudeLoss: number;
+  /** Vida útil em corridas (temporada). Depois disso quebra muito mais. */
+  life: number;
   price: number;
   description: string;
 }

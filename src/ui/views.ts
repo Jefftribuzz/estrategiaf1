@@ -32,7 +32,8 @@ function stat(label: string, v: number, bad = false): string {
   return `<span>${label} ${bar(v, bad)}</span>`;
 }
 
-export function partPicker(kind: Kind, selected: string, action = 'pick', disabled = false): string {
+/** `owned`: rótulo para peças já na garagem (mostrado no lugar do preço). */
+export function partPicker(kind: Kind, selected: string, action = 'pick', disabled = false, owned?: Record<string, string>): string {
   const rows =
     kind === 'aero'
       ? AERO_PARTS.map((p) => ({
@@ -55,7 +56,7 @@ export function partPicker(kind: Kind, selected: string, action = 'pick', disabl
       (r) => `<button class="part${r.id === selected ? ' selected' : ''}" data-act="${action}" data-kind="${kind}" data-id="${r.id}"${disabled ? ' disabled' : ''}>
         <span class="id">${kind === 'tyre' ? tyreBadge(r.id) : esc(r.id)}</span>
         <span><span>${esc(r.name)}</span><div class="desc">${esc(r.desc)}</div><div class="stats">${r.stats}</div></span>
-        <span class="price">$${r.price}M</span>
+        <span class="price">${owned?.[r.id] && kind !== 'tyre' ? `<span class="yellow">${esc(owned[r.id])}</span>` : `$${r.price}M`}</span>
       </button>`,
     )
     .join('')}</div>`;

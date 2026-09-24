@@ -14,16 +14,33 @@ import {
   runQualifying,
   runRace,
   SESSION_LABEL,
-  setupCost,
+  costFor,
+  simulateRestOfWeekend,
+  skipSession,
   validateStrategy,
   type WeekendState,
 } from '../engine/weekend';
+import {
+  buyAero,
+  buyDevelopment,
+  buyEngine,
+  createSeason,
+  engineWearMul,
+  finishRound,
+  SEASON_CALENDAR,
+  startRound,
+  updateWeekend,
+  type DevArea,
+  type SeasonState,
+} from '../engine/season';
+import { championView, hqView, seasonHeader, type HqTab } from './seasonViews';
 import { chip } from './audio';
 import { Replay } from './replay';
 import { carSprite, drawTrack, helmetSprite } from './sprites';
 import { bar, esc, forecastCard, partPicker, tyreBadge } from './views';
 
-type Screen = 'title' | 'help' | 'team' | 'track' | 'hub' | 'practice' | 'quali' | 'race' | 'replay' | 'results';
+type Screen = 'title' | 'help' | 'team' | 'track' | 'season-setup' | 'hq' | 'champion' | 'hub' | 'practice' | 'quali' | 'race' | 'replay' | 'results';
+type Mode = 'quick' | 'season';
 type PartKind = 'aero' | 'engine' | 'tyre';
 
 interface UiState {
@@ -40,9 +57,13 @@ interface UiState {
   error: string;
   replayDone: boolean;
   fanfarePending: boolean;
+  mode: Mode;
+  season: SeasonState | null;
+  hqTab: HqTab;
 }
 
 const SAVE_KEY = 'f1m8.save.v1';
+const SEASON_KEY = 'f1m8.season.v1';
 const CRT_KEY = 'f1m8.crt';
 const DEFAULT_SETUP: CarSetup = { aero: 'A5', engine: 'M5', tyre: 'P4' };
 
@@ -60,6 +81,9 @@ const ui: UiState = {
   error: '',
   replayDone: false,
   fanfarePending: false,
+  mode: 'quick',
+  season: null,
+  hqTab: 'calendario',
 };
 
 let root: HTMLElement;
@@ -69,8 +93,14 @@ let replay: Replay | null = null;
 
 function save() {
   try {
+    const drafts = { drafts: ui.drafts, quali: ui.quali, raceDraft: ui.raceDraft };
+    if (ui.mode === 'season') {
+      if (!ui.season) localStorage.removeItem(SEASON_KEY);
+      else localStorage.setItem(SEASON_KEY, JSON.stringify({ season: ui.season, ...drafts }));
+      return;
+    }
     if (!ui.weekend) localStorage.removeItem(SAVE_KEY);
-    else localStorage.setItem(SAVE_KEY, JSON.stringify({ weekend: ui.weekend, drafts: ui.drafts, quali: ui.quali, raceDraft: ui.raceDraft }));
+    else localStorage.setItem(SAVE_KEY, JSON.stringify({ weekend: ui.weekend, ...drafts }));
   } catch {
     /* armazenamento indisponível: o jogo segue sem salvar */
   }
@@ -85,6 +115,30 @@ function loadSave(): Pick<UiState, 'weekend' | 'drafts' | 'quali' | 'raceDraft'>
   } catch {
     return null;
   }
+}
+
+function loadSeason(): (Pick<UiState, 'drafts' | 'quali' | 'raceDraft'> & { season: SeasonState }) | null {
+  try {
+    const raw = localStorage.getItem(SEASON_KEY);
+    if (!raw) return null;
+    const data = JSON.parse(raw);
+    return data?.season?.version === 1 ? data : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Atualiza o fim de semana atual (e a temporada, se for o caso). */
+function setWeekend(w: WeekendState) {
+  ui.weekend = w;
+  if (ui.mode === 'season' && ui.season) ui.season = updateWeekend(ui.season, w);
+}
+
+function resetDrafts() {
+  ui.drafts = [{ ...DEFAULT_SETUP }];
+  ui.active = 0;
+  ui.kind = 'aero';
+  ui.replayDone = false;
 }
 
 function go(screen: Screen) {
@@ -118,6 +172,12 @@ function attempt(fn: () => void) {
 function header(): string {
   const w = ui.weekend;
   if (!w) return '';
+  if (ui.mode === 'season' && ui.season) {
+    return `${seasonHeader(ui.season)}<div class="row" style="margin:-8px 4px 12px">
+      <span class="muted">GP de ${esc(getTrack(w.trackId).name)} · Disponível: $${w.budget - (w.spent[w.playerTeamId] ?? 0)}M</span>
+      <button class="btn small secondary" data-act="goto" data-arg="hub">Agenda do GP</button>
+      <button class="btn small secondary" data-act="goto" data-arg="hq">QG</button></div>`;
+  }
   const team = getTeam(w.playerTeamId);
   const track = getTrack(w.trackId);
   const spent = w.spent[w.playerTeamId] ?? 0;
@@ -141,11 +201,13 @@ function titleView(): string {
     <div class="parade"><div class="lane">${TEAMS.map((t) => `<img class="px" src="${carSprite(t)}" alt="${esc(t.car)}">`).join('')}</div></div>
     <p class="press-start">APERTE START</p>
     <div class="row" style="justify-content:center">
-      <button class="btn big" data-act="goto" data-arg="team">▶ Corrida rápida</button>
-      ${saved ? '<button class="btn big secondary" data-act="continue">Continuar fim de semana</button>' : ''}
+      <button class="btn big" data-act="new-season">🏆 Temporada</button>
+      <button class="btn big secondary" data-act="new-quick">▶ Corrida rápida</button>
+      ${loadSeason() ? '<button class="btn big secondary" data-act="continue-season">Continuar temporada</button>' : ''}
+      ${saved ? '<button class="btn big secondary" data-act="continue">Continuar corrida rápida</button>' : ''}
       <button class="btn big secondary" data-act="goto" data-arg="help">Como jogar</button>
     </div>
-    <p class="muted" style="margin-top:24px">Fase 1 · Modo solo contra a IA · Multiplayer online em breve</p>
+    <p class="muted" style="margin-top:24px">Temporada de 10 GPs ou corrida rápida contra a IA · Multiplayer online em breve</p>
   </div>`;
 }
 
@@ -162,7 +224,10 @@ function helpView(): string {
     <p><b>Motor:</b> mais potência em troca de consumo e risco de quebra. Calor e altitude roubam potência (turbos sofrem menos com a altitude).</p>
     <p><b>Pneus:</b> macio é rápido e dura pouco. Cada composto tem uma faixa ideal de temperatura. Intermediário para chuva leve, chuva extrema para chuva forte.</p>
     <h3 class="yellow">Orçamento</h3>
-    <p>Você tem $55M por fim de semana para motor, asa e todos os jogos de pneus (classificação + corrida). O "melhor de tudo" não cabe no orçamento.</p>
+    <p><b>Corrida rápida:</b> $55M por fim de semana para motor, asa e todos os jogos de pneus. O "melhor de tudo" não cabe no orçamento.</p>
+    <p><b>Temporada:</b> o orçamento é o seu caixa. Peças compradas ficam na garagem, motores se desgastam a cada corrida e acidentes destroem a asa. Invista os prêmios em desenvolvimento: as rivais também investem.</p>
+    <h3 class="yellow">Sem tempo?</h3>
+    <p><b>⏩ Pular dia:</b> o engenheiro decide a sessão por você. <b>⏭ Simular fim de semana:</b> vai direto ao resultado.</p>
     <h3 class="yellow">Meteorologia</h3>
     <p>Chuva, calor e vento são sorteados para cada sessão. A previsão fica mais precisa a cada dia. Na classificação, você precisa apostar no tempo da corrida.</p>
     <button class="btn" data-act="goto" data-arg="title">Voltar</button>
@@ -190,7 +255,7 @@ function teamView(): string {
       </button>`,
     ).join('')}</div>
     <div class="row" style="margin-top:16px"><button class="btn secondary" data-act="goto" data-arg="title">Voltar</button>
-    <button class="btn big" data-act="goto" data-arg="track">Próximo ▶</button></div>`;
+    <button class="btn big" data-act="goto" data-arg="${ui.mode === 'season' ? 'season-setup' : 'track'}">Próximo ▶</button></div>`;
 }
 
 function trackView(): string {
@@ -237,12 +302,14 @@ function hubView(): string {
     })
     .join('');
   const action = next
-    ? `<button class="btn big" data-act="goto" data-arg="${SESSION_SCREEN[next.session]}">Ir para: ${SESSION_LABEL[next.session]} ▶</button>`
+    ? `<button class="btn big" data-act="goto" data-arg="${SESSION_SCREEN[next.session]}">Ir para: ${SESSION_LABEL[next.session]} ▶</button>
+       <button class="btn secondary" data-act="skip-day" title="O engenheiro decide esta sessão por você">⏩ Pular dia</button>
+       <button class="btn secondary" data-act="skip-weekend" title="O engenheiro decide o resto do fim de semana">⏭ Simular fim de semana</button>`
     : '<button class="btn big" data-act="goto" data-arg="results">Ver resultado final ▶</button>';
   return `${header()}
     <div class="grid two">
       <div class="panel schedule"><h2>Cronograma · GP de ${esc(track.name)}</h2>${schedule}
-        <p class="muted" style="margin-top:10px;font-size:8px">Modo corrida rápida: você pode antecipar a próxima sessão. No multiplayer, cada sessão roda no horário marcado.</p>
+        <p class="muted" style="margin-top:10px;font-size:8px">Contra os bots você pode antecipar a próxima sessão, ou pular o dia e deixar o engenheiro decidir. No multiplayer, cada sessão roda no horário marcado.</p>
         <div class="row">${action}</div>
       </div>
       <div class="panel"><h2>A pista</h2>
@@ -261,7 +328,7 @@ function hubView(): string {
     ${w.completed >= 1 ? `<div class="row"><button class="btn secondary" data-act="goto" data-arg="practice">Telemetria do teste</button>
       ${w.completed >= 2 ? '<button class="btn secondary" data-act="goto" data-arg="quali">Grid de largada</button>' : ''}
       ${w.completed >= 3 ? '<button class="btn secondary" data-act="goto" data-arg="results">Resultado da corrida</button>' : ''}</div>` : ''}
-    <div class="row" style="margin-top:12px"><button class="btn small danger" data-act="abandon">Abandonar fim de semana</button></div>`;
+    ${ui.mode === 'quick' ? '<div class="row" style="margin-top:12px"><button class="btn small danger" data-act="abandon">Abandonar fim de semana</button></div>' : ''}`;
 }
 
 function setupSummary(s: CarSetup): string {
@@ -297,9 +364,9 @@ function practiceView(): string {
     <div class="panel">
       <div class="tabs">${tabs}${ui.drafts.length < MAX_PRACTICE_RUNS ? '<button class="tab" data-act="add-draft">+ Novo acerto</button>' : ''}
         ${ui.drafts.length > 1 ? '<button class="tab" data-act="remove-draft">✕ Remover</button>' : ''}</div>
-      <div style="margin-bottom:10px">${setupSummary(draft)} <span class="muted">Custo na corrida: $${setupCost(draft)}M</span></div>
+      <div style="margin-bottom:10px">${setupSummary(draft)} <span class="muted">Custo na corrida: $${costFor(ui.weekend!, ui.weekend!.playerTeamId, draft)}M</span></div>
       ${kindTabs()}
-      ${partPicker(ui.kind, draft[ui.kind])}
+      ${partPicker(ui.kind, draft[ui.kind], 'pick', false, ownedLabels())}
     </div>
     <div class="row"><button class="btn secondary" data-act="goto" data-arg="hub">Voltar</button>
       <button class="btn big" data-act="run-practice">Rodar teste (${ui.drafts.length} acerto${ui.drafts.length > 1 ? 's' : ''}) ▶</button></div>`;
@@ -353,7 +420,7 @@ function qualiView(): string {
   const w = ui.weekend!;
   if (w.completed >= 2) return gridView();
   const fc = forecasts(w);
-  const cost = setupCost(ui.quali);
+  const cost = costFor(w, w.playerTeamId, ui.quali);
   const tested = w.practiceRuns
     .map((r, i) => `<button class="btn small secondary" data-act="use-run" data-arg="${i}">Usar acerto ${i + 1} (${formatLap(r.best)})</button>`)
     .join('');
@@ -364,14 +431,14 @@ function qualiView(): string {
       ${forecastCard(fc[2], 'Previsão p/ corrida', fmtDate(w.schedule[2].date))}
       <div class="panel tight"><h3 class="red">Parque fechado</h3>
         <p style="font-size:8px">A aerodinâmica e o motor escolhidos aqui <b>ficam travados para a corrida</b>. Só os pneus e a estratégia podem mudar. Pense no tempo da corrida, não só no de hoje!</p>
-        ${budgetMeter(cost, w.budget, 'Custo do acerto')}
+        ${budgetMeter(cost, w.budget, ui.mode === 'season' ? 'Custo (peças novas + pneu)' : 'Custo do acerto')}
         <p class="muted" style="font-size:8px">Sobram $${Math.max(0, w.budget - cost)}M para os pneus da corrida.</p></div>
     </div>
     <div class="panel">
       <div class="row" style="margin-bottom:8px">${tested}</div>
       <div style="margin-bottom:10px">${setupSummary(ui.quali)}</div>
       ${kindTabs()}
-      ${partPicker(ui.kind, ui.quali[ui.kind], 'pick-quali')}
+      ${partPicker(ui.kind, ui.quali[ui.kind], 'pick-quali', false, ownedLabels())}
     </div>
     <div class="row"><button class="btn secondary" data-act="goto" data-arg="hub">Voltar</button>
       <button class="btn big" data-act="run-quali"${cost > w.budget ? ' disabled' : ''}>Volta rápida! ▶</button></div>`;
@@ -510,8 +577,9 @@ function resultsView(): string {
     </table></div></div>
     <div class="row">
       <button class="btn secondary" data-act="goto" data-arg="replay">Ver replay</button>
-      <button class="btn secondary" data-act="goto" data-arg="hub">Agenda</button>
-      <button class="btn big" data-act="new">Novo fim de semana ▶</button>
+      ${ui.mode === 'season'
+        ? '<button class="btn big" data-act="finish-round">Encerrar GP e voltar ao QG ▶</button>'
+        : '<button class="btn secondary" data-act="goto" data-arg="hub">Agenda</button><button class="btn big" data-act="new-quick">Novo fim de semana ▶</button>'}
     </div>`;
 }
 
@@ -534,15 +602,69 @@ function podium(top: string[], playerId: string): string {
     <div class="podium">${step(2)}${step(1)}${step(3)}</div></div>`;
 }
 
+/** Na temporada, peças da garagem aparecem como "na garagem" em vez do preço. */
+function ownedLabels(): Record<string, string> | undefined {
+  const s = ui.season;
+  if (ui.mode !== 'season' || !s) return undefined;
+  const out: Record<string, string> = {};
+  for (const a of s.ownedAero) out[a] = '✓ garagem';
+  for (const e of s.engines) {
+    const life = getEngine(e.id).life;
+    out[e.id] = `✓ ${e.races}/${life} corr. ×${engineWearMul(e).toFixed(1)}`;
+  }
+  return out;
+}
+
+function afterSkip(before: number) {
+  const w = ui.weekend!;
+  if (w.completed >= 1 && before < 1 && w.practiceRuns.length) {
+    ui.quali = { ...[...w.practiceRuns].sort((a, b) => a.best - b.best)[0].setup };
+  }
+  if (w.completed >= 2 && before < 2) {
+    const q = w.setups[w.playerTeamId];
+    ui.quali = { ...q };
+    ui.raceDraft = { stints: [q.tyre, q.tyre], pitLaps: evenPits(1, getTrack(w.trackId).laps), mode: 'normal' };
+  }
+  save();
+  if (w.completed >= 3) {
+    ui.replayDone = true;
+    ui.fanfarePending = true;
+    go('results');
+  } else {
+    go('hub');
+  }
+}
+
+function seasonSetupView(): string {
+  const team = getTeam(ui.teamId);
+  return `<h1>Nova temporada</h1>
+    <div class="panel row">
+      <img class="px" src="${carSprite(team)}" width="160" height="56" alt="${esc(team.car)}">
+      <div><div class="yellow">${esc(team.driver.name)}</div><div class="muted">${esc(team.car)} (${team.year})</div></div>
+    </div>
+    <div class="panel"><h2>Calendário</h2><div class="row">${SEASON_CALENDAR.map((id, i) => `<span class="pill">${i + 1}. ${esc(getTrack(id).name)}</span>`).join('')}</div>
+      <p style="margin-top:10px">10 GPs, um a cada 3 dias. Você começa com <span class="green">$150M</span>, recebe $12M de patrocínio por GP e prêmios pela posição de chegada.</p>
+      <p class="muted" style="font-size:8px">Peças compradas ficam na garagem. Motores se desgastam, acidentes destroem a asa, e o dinheiro também serve para desenvolver o carro.</p></div>
+    <div class="panel tight"><h3>Dificuldade da IA</h3><div class="tabs">${DIFFICULTIES.map(
+      (d) => `<button class="tab${d.id === ui.difficulty ? ' active' : ''}" data-act="difficulty" data-arg="${d.id}">${d.label}</button>`,
+    ).join('')}</div></div>
+    <div class="row"><button class="btn secondary" data-act="goto" data-arg="team">Voltar</button>
+    <button class="btn big" data-act="start-season">Começar temporada ▶</button></div>`;
+}
+
 // ------------------------------------------------------------- render ------
 
 function render() {
   const views: Record<Screen, () => string> = {
     title: titleView, help: helpView, team: teamView, track: trackView, hub: hubView,
+    'season-setup': seasonSetupView, hq: () => hqView(ui.season!, ui.hqTab), champion: () => championView(ui.season!),
     practice: practiceView, quali: qualiView, race: raceView, replay: replayView, results: resultsView,
   };
-  const needsWeekend = !['title', 'help', 'team', 'track'].includes(ui.screen);
-  if (needsWeekend && !ui.weekend) ui.screen = 'title';
+  const needsWeekend = !['title', 'help', 'team', 'track', 'season-setup', 'hq', 'champion'].includes(ui.screen);
+  if (needsWeekend && !ui.weekend) ui.screen = ui.season && ui.mode === 'season' ? 'hq' : 'title';
+  if (['hq', 'champion'].includes(ui.screen) && !ui.season) ui.screen = 'title';
+  // A animação de entrada só toca na troca de tela (go), não a cada redesenho.
+  root.classList.remove('enter');
   const toolbar = `<div class="toolbar">
     <button class="tab" data-act="sound" title="Som">${chip.muted ? '🔇 SOM' : '🔊 SOM'}</button>
     <button class="tab${document.body.classList.contains('crt') ? ' active' : ''}" data-act="crt" title="Efeito de TV antiga">📺 CRT</button></div>`;
@@ -580,6 +702,8 @@ function handle(act: string, arg: string, el: HTMLElement) {
     case 'continue': {
       const s = loadSave();
       if (s) Object.assign(ui, s);
+      ui.mode = 'quick';
+      ui.season = null;
       go('hub');
       return;
     }
@@ -593,16 +717,103 @@ function handle(act: string, arg: string, el: HTMLElement) {
       ui.difficulty = arg as Difficulty['id'];
       break;
     case 'start':
+      ui.mode = 'quick';
+      ui.season = null;
       ui.weekend = createWeekend({ trackId: ui.trackId, playerTeamId: ui.teamId, difficulty: ui.difficulty });
-      ui.drafts = [{ ...DEFAULT_SETUP }];
-      ui.active = 0;
-      ui.kind = 'aero';
-      ui.replayDone = false;
+      resetDrafts();
       save();
       go('hub');
       return;
-    case 'new':
+    case 'new-quick':
+      ui.mode = 'quick';
+      ui.season = null;
+      ui.weekend = null;
       go('team');
+      return;
+    case 'new-season':
+      ui.mode = 'season';
+      ui.season = null;
+      ui.weekend = null;
+      go('team');
+      return;
+    case 'start-season':
+      ui.mode = 'season';
+      ui.season = createSeason({ playerTeamId: ui.teamId, difficulty: ui.difficulty });
+      ui.weekend = null;
+      ui.hqTab = 'calendario';
+      save();
+      go('hq');
+      return;
+    case 'continue-season': {
+      const d = loadSeason();
+      if (!d) return;
+      ui.mode = 'season';
+      ui.season = d.season;
+      ui.weekend = d.season.weekend;
+      ui.drafts = d.drafts;
+      ui.quali = d.quali;
+      ui.raceDraft = d.raceDraft;
+      go('hq');
+      return;
+    }
+    case 'hq-tab':
+      ui.hqTab = arg as HqTab;
+      break;
+    case 'start-round':
+      attempt(() => {
+        ui.season = startRound(ui.season!);
+        ui.weekend = ui.season.weekend;
+        resetDrafts();
+        save();
+        go('hub');
+      });
+      return;
+    case 'finish-round':
+      attempt(() => {
+        ui.season = finishRound(ui.season!);
+        ui.weekend = null;
+        ui.hqTab = 'calendario';
+        save();
+        go(ui.season.finished ? 'champion' : 'hq');
+        if (ui.season.finished) chip.sfx('fanfare');
+      });
+      return;
+    case 'abandon-season':
+      if (!confirm('Abandonar a temporada? O progresso será perdido.')) return;
+      ui.season = null;
+      ui.weekend = null;
+      save();
+      go('title');
+      return;
+    case 'buy-dev':
+      attempt(() => {
+        ui.season = buyDevelopment(ui.season!, arg as DevArea);
+        chip.sfx('select');
+      });
+      break;
+    case 'buy-engine':
+      attempt(() => {
+        ui.season = buyEngine(ui.season!, arg);
+      });
+      break;
+    case 'buy-aero':
+      attempt(() => {
+        ui.season = buyAero(ui.season!, arg);
+      });
+      break;
+    case 'skip-day':
+      attempt(() => {
+        const before = w!.completed;
+        setWeekend(skipSession(w!));
+        afterSkip(before);
+      });
+      return;
+    case 'skip-weekend':
+      attempt(() => {
+        const before = w!.completed;
+        setWeekend(simulateRestOfWeekend(w!));
+        afterSkip(before);
+      });
       return;
     case 'abandon':
       if (!confirm('Abandonar este fim de semana?')) return;
@@ -639,8 +850,8 @@ function handle(act: string, arg: string, el: HTMLElement) {
       break;
     case 'run-practice':
       attempt(() => {
-        ui.weekend = runPractice(w!, ui.drafts);
-        const bestRun = [...ui.weekend.practiceRuns].sort((a, b) => a.best - b.best)[0];
+        setWeekend(runPractice(w!, ui.drafts));
+        const bestRun = [...ui.weekend!.practiceRuns].sort((a, b) => a.best - b.best)[0];
         ui.quali = { ...bestRun.setup };
         ui.kind = 'aero';
         save();
@@ -649,8 +860,8 @@ function handle(act: string, arg: string, el: HTMLElement) {
       return;
     case 'run-quali':
       attempt(() => {
-        ui.weekend = runQualifying(w!, ui.quali);
-        const laps = getTrack(ui.weekend.trackId).laps;
+        setWeekend(runQualifying(w!, ui.quali));
+        const laps = getTrack(ui.weekend!.trackId).laps;
         ui.raceDraft = { stints: [ui.quali.tyre, ui.quali.tyre], pitLaps: evenPits(1, laps), mode: 'normal' };
         save();
         go('quali');
@@ -680,7 +891,7 @@ function handle(act: string, arg: string, el: HTMLElement) {
     }
     case 'run-race':
       attempt(() => {
-        ui.weekend = runRace(w!, ui.raceDraft);
+        setWeekend(runRace(w!, ui.raceDraft));
         ui.replayDone = false;
         save();
         go('replay');
