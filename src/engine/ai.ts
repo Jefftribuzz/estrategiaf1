@@ -107,7 +107,7 @@ export function botChooseStrategy(
   const modes: DriveMode[] = difficulty.id === 'facil' ? ['normal'] : ['normal', 'agressivo', 'poupar'];
   let best: { strategy: RaceStrategy; time: number } | null = null;
   for (const mode of modes) {
-    const r = bestStrategy(build, track, weather, tyreBudget, mode, difficulty.id === 'facil' ? 1 : 2);
+    const r = bestStrategy(build, track, weather, tyreBudget, mode, difficulty.id === 'facil' ? 1 : 2, () => rng.gauss(difficulty.noise * 2));
     if (r && (!best || r.time < best.time)) best = r;
   }
   if (best) return best.strategy;

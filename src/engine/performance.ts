@@ -44,8 +44,8 @@ const SECTOR_K = 0.35;
  */
 const CHASSIS_WEIGHT = { straight: 0.75, slow: 1.09, fast: 1.33 };
 
-const MODE_PACE: Record<DriveMode, number> = { poupar: 1.008, normal: 1, agressivo: 0.992 };
-const MODE_WEAR: Record<DriveMode, number> = { poupar: 0.75, normal: 1, agressivo: 1.3 };
+const MODE_PACE: Record<DriveMode, number> = { poupar: 1.012, normal: 1, agressivo: 0.992 };
+const MODE_WEAR: Record<DriveMode, number> = { poupar: 0.8, normal: 1, agressivo: 1.3 };
 const MODE_FAIL: Record<DriveMode, number> = { poupar: 0.55, normal: 1, agressivo: 1.8 };
 const MODE_ERROR: Record<DriveMode, number> = { poupar: 0.7, normal: 1, agressivo: 1.5 };
 

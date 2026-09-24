@@ -70,6 +70,8 @@ export function bestStrategy(
   tyreBudget: number,
   mode: DriveMode = 'normal',
   maxStops = 2,
+  /** Ruído de avaliação: bots menos precisos erram a conta. */
+  jitter: () => number = () => 0,
 ): { strategy: RaceStrategy; time: number } | null {
   const tyres = usableTyres(weather);
   let best: { strategy: RaceStrategy; time: number } | null = null;
@@ -77,7 +79,7 @@ export function bestStrategy(
     const pitLaps = planPitLaps(build, stints, track, weather, mode);
     const strategy: RaceStrategy = { stints, pitLaps, mode };
     if (strategyCost(strategy) > tyreBudget) return;
-    const time = estimateRace(build, strategy, track, weather);
+    const time = estimateRace(build, strategy, track, weather) + jitter();
     if (!best || time < best.time) best = { strategy, time };
   };
   const rec = (prefix: string[], left: number) => {

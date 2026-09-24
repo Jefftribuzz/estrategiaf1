@@ -37,7 +37,7 @@ export const TYRE_PARTS: TyrePart[] = [
   { id: 'P5', name: 'Duro', kind: 'seco', grip: 0.84, wetGrip: { light: 0.42, heavy: 0.28 }, wear: { dry: 0.7, wet: 0.8 }, cold: 0.88, hot: 1.0, price: 4, description: 'Dura muito. Não aquece no frio.' },
   { id: 'P6', name: 'Extraduro', kind: 'seco', grip: 0.8, wetGrip: { light: 0.4, heavy: 0.27 }, wear: { dry: 0.5, wet: 0.6 }, cold: 0.82, hot: 1.0, price: 3, description: 'Corrida inteira sem parar, mas lento.' },
   { id: 'P7', name: 'Macio de Inverno', kind: 'seco', grip: 0.9, wetGrip: { light: 0.5, heavy: 0.32 }, wear: { dry: 1.3, wet: 1.2 }, cold: 1.04, hot: 0.82, price: 6, description: 'Feito para pista fria. No calor, derrete.' },
-  { id: 'P8', name: 'Médio Premium', kind: 'seco', grip: 0.91, wetGrip: { light: 0.46, heavy: 0.3 }, wear: { dry: 0.9, wet: 0.9 }, cold: 0.96, hot: 1.0, price: 10, description: 'O melhor pneu de seco. Caro.' },
+  { id: 'P8', name: 'Médio Premium', kind: 'seco', grip: 0.91, wetGrip: { light: 0.46, heavy: 0.3 }, wear: { dry: 1.15, wet: 1.1 }, cold: 0.96, hot: 1.0, price: 10, description: 'O melhor pneu de seco. Caro.' },
   { id: 'P9', name: 'Intermediário', kind: 'inter', grip: 0.74, wetGrip: { light: 0.8, heavy: 0.62 }, wear: { dry: 2.0, wet: 1.0 }, cold: 1.0, hot: 0.95, price: 5, description: 'Para chuva leve ou pista secando.' },
   { id: 'P10', name: 'Chuva Extrema', kind: 'chuva', grip: 0.62, wetGrip: { light: 0.76, heavy: 0.86 }, wear: { dry: 3.0, wet: 0.8 }, cold: 1.0, hot: 0.95, price: 6, description: 'Para chuva forte. No seco, destrói-se.' },
 ];
