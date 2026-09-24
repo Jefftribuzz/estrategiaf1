@@ -1,0 +1,21 @@
+# Blueprint do Render: um serviço web que serve o jogo e a API do multiplayer.
+# O banco (Postgres) pode ser do Supabase, Neon ou do próprio Render:
+# basta colocar a connection string em DATABASE_URL.
+services:
+  - type: web
+    name: grande-premio-8bit
+    runtime: node
+    plan: free
+    buildCommand: npm ci && npm run build
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: DATABASE_URL
+        sync: false
+      - key: TRUST_PROXY
+        value: "1"
+      # Opcional: ativa o login com Google (Client ID do Google Cloud).
+      - key: GOOGLE_CLIENT_ID
+        sync: false

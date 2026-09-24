@@ -17,16 +17,16 @@ export const AERO_PARTS: AeroPart[] = [
 ];
 
 export const ENGINE_PARTS: EnginePart[] = [
-  { id: 'M1', name: 'V8 Básico', power: 0.5, reliability: 0.98, consumption: 0.4, heatTolerance: 0.8, altitudeLoss: 0.3, price: 4, description: 'Fraco, mas quase não quebra.' },
-  { id: 'M2', name: 'V8 Clássico', power: 0.58, reliability: 0.97, consumption: 0.45, heatTolerance: 0.8, altitudeLoss: 0.3, price: 6, description: 'Robusto e econômico.' },
-  { id: 'M3', name: 'V12 Aspirado', power: 0.68, reliability: 0.9, consumption: 0.8, heatTolerance: 0.5, altitudeLoss: 0.3, price: 10, description: 'Potente e gastão. Sofre no calor.' },
-  { id: 'M4', name: 'V10 Econômico', power: 0.66, reliability: 0.95, consumption: 0.45, heatTolerance: 0.7, altitudeLoss: 0.28, price: 11, description: 'Equilibrado, carrega pouco combustível.' },
-  { id: 'M5', name: 'V10 Padrão', power: 0.74, reliability: 0.93, consumption: 0.55, heatTolerance: 0.7, altitudeLoss: 0.28, price: 13, description: 'A escolha segura.' },
-  { id: 'M6', name: 'Turbo Baixa Pressão', power: 0.76, reliability: 0.9, consumption: 0.6, heatTolerance: 0.6, altitudeLoss: 0.1, price: 14, description: 'O turbo quase não perde força na altitude.' },
-  { id: 'M7', name: 'V10 Corrida', power: 0.82, reliability: 0.88, consumption: 0.65, heatTolerance: 0.6, altitudeLoss: 0.28, price: 17, description: 'Forte, com risco moderado.' },
-  { id: 'M8', name: 'Turbo Alta Pressão', power: 0.92, reliability: 0.78, consumption: 0.8, heatTolerance: 0.4, altitudeLoss: 0.08, price: 20, description: 'Um canhão de vidro: potência bruta, quebra fácil.' },
-  { id: 'M9', name: 'Híbrido V6', power: 0.86, reliability: 0.91, consumption: 0.45, heatTolerance: 0.75, altitudeLoss: 0.12, price: 28, description: 'O mais completo. E o mais caro.' },
-  { id: 'M10', name: 'V10 Qualificação', power: 1.0, reliability: 0.7, consumption: 0.85, heatTolerance: 0.35, altitudeLoss: 0.28, price: 24, description: 'Feito para uma volta. Numa corrida inteira, é roleta.' },
+  { id: 'M1', name: 'V8 Básico', power: 0.5, reliability: 0.98, consumption: 0.4, heatTolerance: 0.8, altitudeLoss: 0.3, life: 6, price: 4, description: 'Fraco, mas quase não quebra.' },
+  { id: 'M2', name: 'V8 Clássico', power: 0.58, reliability: 0.97, consumption: 0.45, heatTolerance: 0.8, altitudeLoss: 0.3, life: 5, price: 6, description: 'Robusto e econômico.' },
+  { id: 'M3', name: 'V12 Aspirado', power: 0.68, reliability: 0.9, consumption: 0.8, heatTolerance: 0.5, altitudeLoss: 0.3, life: 3, price: 10, description: 'Potente e gastão. Sofre no calor.' },
+  { id: 'M4', name: 'V10 Econômico', power: 0.66, reliability: 0.95, consumption: 0.45, heatTolerance: 0.7, altitudeLoss: 0.28, life: 5, price: 11, description: 'Equilibrado, carrega pouco combustível.' },
+  { id: 'M5', name: 'V10 Padrão', power: 0.74, reliability: 0.93, consumption: 0.55, heatTolerance: 0.7, altitudeLoss: 0.28, life: 4, price: 13, description: 'A escolha segura.' },
+  { id: 'M6', name: 'Turbo Baixa Pressão', power: 0.76, reliability: 0.9, consumption: 0.6, heatTolerance: 0.6, altitudeLoss: 0.1, life: 3, price: 14, description: 'O turbo quase não perde força na altitude.' },
+  { id: 'M7', name: 'V10 Corrida', power: 0.82, reliability: 0.88, consumption: 0.65, heatTolerance: 0.6, altitudeLoss: 0.28, life: 3, price: 17, description: 'Forte, com risco moderado.' },
+  { id: 'M8', name: 'Turbo Alta Pressão', power: 0.92, reliability: 0.78, consumption: 0.8, heatTolerance: 0.4, altitudeLoss: 0.08, life: 2, price: 20, description: 'Um canhão de vidro: potência bruta, quebra fácil.' },
+  { id: 'M9', name: 'Híbrido V6', power: 0.86, reliability: 0.91, consumption: 0.45, heatTolerance: 0.75, altitudeLoss: 0.12, life: 4, price: 28, description: 'O mais completo. E o mais caro.' },
+  { id: 'M10', name: 'V10 Qualificação', power: 1.0, reliability: 0.7, consumption: 0.85, heatTolerance: 0.35, altitudeLoss: 0.28, life: 1, price: 24, description: 'Feito para uma volta. Numa corrida inteira, é roleta.' },
 ];
 
 export const TYRE_PARTS: TyrePart[] = [

@@ -22,6 +22,16 @@ function rect(ctx: Ctx, x: number, y: number, w: number, h: number, color: strin
   ctx.fillRect(x, y, w, h);
 }
 
+/** Clareia (amt > 0) ou escurece (amt < 0) uma cor #rrggbb. */
+export function shade(hex: string, amt: number): string {
+  const n = parseInt(hex.slice(1), 16);
+  const mix = (c: number) => Math.round(amt >= 0 ? c + (255 - c) * amt : c * (1 + amt));
+  const r = mix((n >> 16) & 255);
+  const g = mix((n >> 8) & 255);
+  const b = mix(n & 255);
+  return `#${((1 << 24) | (r << 16) | (g << 8) | b).toString(16).slice(1)}`;
+}
+
 const TYRE = '#161616';
 const RIM = '#8a8a8a';
 const OUTLINE = '#000000';
@@ -48,6 +58,7 @@ export function carSprite(team: Team): string {
   const [c, ctx] = canvas(40, 14);
   const { primary: P, secondary: S, accent: A } = team.livery;
   const H = team.driver.helmet;
+  rect(ctx, 2, 13, 36, 1, 'rgba(0,0,0,0.35)');
 
   if (team.era === 'classic') {
     // Charuto dos anos 50/60: sem asas, rodas expostas, piloto alto.
@@ -56,6 +67,8 @@ export function carSprite(team: Team): string {
     rect(ctx, 35, 7, 3, 3, P);
     rect(ctx, 38, 8, 1, 1, OUTLINE);
     rect(ctx, 5, 6, 29, 1, S);
+    rect(ctx, 3, 9, 32, 1, shade(P, -0.35));
+    rect(ctx, 35, 7, 2, 1, shade(P, 0.3));
     rect(ctx, 8, 10, 12, 1, RIM);
     rect(ctx, 21, 4, 1, 2, '#9fd8ff');
     helmetSide(ctx, 16, 3, H);
@@ -72,7 +85,10 @@ export function carSprite(team: Team): string {
     rect(ctx, 16, 3, 3, 1, P);
     rect(ctx, 2, 6, 33, 3, P);
     rect(ctx, 9, 6, 15, 1, S);
+    rect(ctx, 2, 8, 33, 1, shade(P, -0.35));
+    rect(ctx, 7, 4, 12, 1, shade(P, 0.3));
     rect(ctx, 33, 7, 5, 2, P);
+    rect(ctx, 33, 8, 5, 1, shade(P, -0.35));
     rect(ctx, 34, 9, 6, 2, A);
     rect(ctx, 12, 7, 3, 2, '#f4f4f4');
     helmetSide(ctx, 19, 3, H);
@@ -88,7 +104,10 @@ export function carSprite(team: Team): string {
     rect(ctx, 17, 2, 3, 2, A);
     rect(ctx, 3, 6, 33, 3, P);
     rect(ctx, 10, 7, 14, 1, S);
+    rect(ctx, 3, 8, 33, 1, shade(P, -0.35));
+    rect(ctx, 6, 3, 13, 1, shade(P, 0.3));
     rect(ctx, 34, 7, 5, 2, P);
+    rect(ctx, 34, 8, 5, 1, shade(P, -0.35));
     rect(ctx, 33, 9, 7, 2, A);
     rect(ctx, 36, 8, 4, 1, S);
     rect(ctx, 12, 6, 3, 1, '#f4f4f4');
@@ -123,6 +142,11 @@ export function helmetSprite(team: Team): string {
   rect(ctx, 2, 6, 12, 1, h.stripe1);
   rect(ctx, 2, 11, 12, 1, h.stripe2);
   rect(ctx, 5, 3, 2, 3, h.stripe2);
+  // volume: brilho no topo, sombra embaixo
+  rect(ctx, 4, 3, 3, 1, shade(h.base, 0.45));
+  rect(ctx, 3, 4, 1, 2, shade(h.base, 0.3));
+  rect(ctx, 3, 12, 10, 1, shade(h.base, -0.3));
+  rect(ctx, 12, 10, 2, 2, shade(h.base, -0.3));
   // viseira
   rect(ctx, 6, 7, 8, 3, h.visor);
   rect(ctx, 8, 8, 2, 1, '#7a8aa0');

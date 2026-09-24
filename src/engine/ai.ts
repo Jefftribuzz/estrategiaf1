@@ -55,7 +55,14 @@ function bestQualiTyre(team: Team, setup: Pick<CarSetup, 'aero' | 'engine'>, tra
   return best;
 }
 
-/** Bot escolhe aero + motor (travados após a classificação) e o pneu da classificação. */
+export interface SetupOptions {
+  /** Preço efetivo de uma peça (0 se a equipe já a tem na garagem). */
+  price?: (kind: 'aero' | 'engine', id: string) => number;
+  /** Equipe efetiva com um dado motor (ex.: motor gasto quebra mais). */
+  teamFor?: (engineId: string) => Team;
+}
+
+/** Bot (ou engenheiro do jogador) escolhe aero + motor e o pneu da classificação. */
 export function botChooseSetup(
   team: Team,
   track: Track,
@@ -64,7 +71,10 @@ export function botChooseSetup(
   budget: number,
   difficulty: Difficulty,
   rng: Rng,
+  opts: SetupOptions = {},
 ): CarSetup {
+  const price = opts.price ?? ((kind, id) => (kind === 'aero' ? AERO_PARTS : ENGINE_PARTS).find((p) => p.id === id)!.price);
+  const teamWith = opts.teamFor ?? (() => team);
   const qualiScen = [0, 1, 2].map(() => sampleFromForecast(qualiForecast, rng));
   const raceScen = [0, 1, 2].map(() => sampleFromForecast(raceForecast, rng));
   const combos = AERO_PARTS.flatMap((a) => ENGINE_PARTS.map((e) => ({ aero: a, engine: e })));
@@ -76,20 +86,26 @@ export function botChooseSetup(
   let evaluated = 0;
   for (const { aero, engine } of combos) {
     if (evaluated >= difficulty.candidates) break;
-    const left = budget - aero.price - engine.price - RACE_TYRE_RESERVE;
+    const left = budget - price('aero', aero.id) - price('engine', engine.id) - RACE_TYRE_RESERVE;
     if (left < 5) continue;
     evaluated++;
     const setup = { aero: aero.id, engine: engine.id };
-    const q = qualiScen.reduce((s, w) => s + bestQualiTyre(team, setup, track, w, left).time, 0) / qualiScen.length;
-    const r = raceScen.reduce((s, w) => s + quickRace(team, setup, track, w), 0) / raceScen.length;
+    const t = teamWith(engine.id);
+    const q = qualiScen.reduce((s, w) => s + bestQualiTyre(t, setup, track, w, left).time, 0) / qualiScen.length;
+    const r = raceScen.reduce((s, w) => s + quickRace(t, setup, track, w), 0) / raceScen.length;
     const score = r + 3 * q + rng.gauss(difficulty.noise * 3);
     if (!best || score < best.score) best = { setup, score };
   }
-  const chosen = best?.setup ?? { aero: 'A5', engine: 'M5' };
-  const aeroPrice = AERO_PARTS.find((a) => a.id === chosen.aero)!.price;
-  const enginePrice = ENGINE_PARTS.find((e) => e.id === chosen.engine)!.price;
-  const tyre = bestQualiTyre(team, chosen, track, mostLikely(qualiForecast), budget - aeroPrice - enginePrice - RACE_TYRE_RESERVE).id;
+  const chosen = best?.setup ?? cheapestSetup(price);
+  const left = budget - price('aero', chosen.aero) - price('engine', chosen.engine);
+  const tyre = bestQualiTyre(teamWith(chosen.engine), chosen, track, mostLikely(qualiForecast), Math.max(3, left - RACE_TYRE_RESERVE)).id;
   return { ...chosen, tyre };
+}
+
+function cheapestSetup(price: NonNullable<SetupOptions['price']>): Pick<CarSetup, 'aero' | 'engine'> {
+  const aero = [...AERO_PARTS].sort((a, b) => price('aero', a.id) - price('aero', b.id))[0];
+  const engine = [...ENGINE_PARTS].sort((a, b) => price('engine', a.id) - price('engine', b.id))[0];
+  return { aero: aero.id, engine: engine.id };
 }
 
 export function botChooseStrategy(

@@ -4,7 +4,7 @@ import { getTeam, TEAMS } from '../engine/data/teams';
 import { getTrack, TRACKS } from '../engine/data/tracks';
 import { formatLap, type PracticeRun } from '../engine/session';
 import { strategyCost } from '../engine/strategy';
-import type { CarSetup, Difficulty, DriveMode, RaceStrategy, SessionId } from '../engine/types';
+import type { CarSetup, Difficulty, DriveMode, Light, RaceStrategy, SessionId, Track } from '../engine/types';
 import { describeWeather } from '../engine/weather';
 import {
   createWeekend,
@@ -14,15 +14,50 @@ import {
   runQualifying,
   runRace,
   SESSION_LABEL,
-  setupCost,
+  costFor,
+  simulateRestOfWeekend,
+  skipSession,
   validateStrategy,
   type WeekendState,
 } from '../engine/weekend';
+import {
+  buyAero,
+  buyDevelopment,
+  buyEngine,
+  createSeason,
+  engineWearMul,
+  finishRound,
+  SEASON_CALENDAR,
+  startRound,
+  updateWeekend,
+  type DevArea,
+  type SeasonState,
+} from '../engine/season';
+import { championView, hqView, seasonHeader, type HqTab } from './seasonViews';
+import type { LeagueView } from '../engine/league';
+import {
+  api,
+  disablePush,
+  enablePush,
+  getToken,
+  leagueSessionPanel,
+  lobbyView,
+  mountGoogleButton,
+  onlineView,
+  pushState,
+  rankingView,
+  useToken,
+  type MeResponse,
+  type RankingRow,
+  type ServerConfig,
+} from './online';
+import { chip } from './audio';
 import { Replay } from './replay';
 import { carSprite, drawTrack, helmetSprite } from './sprites';
 import { bar, esc, forecastCard, partPicker, tyreBadge } from './views';
 
-type Screen = 'title' | 'help' | 'team' | 'track' | 'hub' | 'practice' | 'quali' | 'race' | 'replay' | 'results';
+type Screen = 'title' | 'help' | 'team' | 'track' | 'season-setup' | 'hq' | 'champion' | 'hub' | 'practice' | 'quali' | 'race' | 'replay' | 'results' | 'online' | 'lobby' | 'ranking';
+type Mode = 'quick' | 'season' | 'league';
 type PartKind = 'aero' | 'engine' | 'tyre';
 
 interface UiState {
@@ -38,9 +73,23 @@ interface UiState {
   raceDraft: RaceStrategy;
   error: string;
   replayDone: boolean;
+  fanfarePending: boolean;
+  mode: Mode;
+  season: SeasonState | null;
+  hqTab: HqTab;
+  league: LeagueView | null;
+  me: MeResponse | null;
+  meLoading: boolean;
+  toast: string;
+  busy: boolean;
+  config: ServerConfig | null;
+  deviceLink: string | null;
+  ranking: RankingRow[] | null;
 }
 
 const SAVE_KEY = 'f1m8.save.v1';
+const SEASON_KEY = 'f1m8.season.v1';
+const CRT_KEY = 'f1m8.crt';
 const DEFAULT_SETUP: CarSetup = { aero: 'A5', engine: 'M5', tyre: 'P4' };
 
 const ui: UiState = {
@@ -56,6 +105,18 @@ const ui: UiState = {
   raceDraft: { stints: ['P4', 'P4'], pitLaps: [14], mode: 'normal' },
   error: '',
   replayDone: false,
+  fanfarePending: false,
+  mode: 'quick',
+  season: null,
+  hqTab: 'calendario',
+  league: null,
+  me: null,
+  meLoading: false,
+  toast: '',
+  busy: false,
+  config: null,
+  deviceLink: null,
+  ranking: null,
 };
 
 let root: HTMLElement;
@@ -65,8 +126,15 @@ let replay: Replay | null = null;
 
 function save() {
   try {
+    const drafts = { drafts: ui.drafts, quali: ui.quali, raceDraft: ui.raceDraft };
+    if (ui.mode === 'league') return;
+    if (ui.mode === 'season') {
+      if (!ui.season) localStorage.removeItem(SEASON_KEY);
+      else localStorage.setItem(SEASON_KEY, JSON.stringify({ season: ui.season, ...drafts }));
+      return;
+    }
     if (!ui.weekend) localStorage.removeItem(SAVE_KEY);
-    else localStorage.setItem(SAVE_KEY, JSON.stringify({ weekend: ui.weekend, drafts: ui.drafts, quali: ui.quali, raceDraft: ui.raceDraft }));
+    else localStorage.setItem(SAVE_KEY, JSON.stringify({ weekend: ui.weekend, ...drafts }));
   } catch {
     /* armazenamento indisponível: o jogo segue sem salvar */
   }
@@ -83,12 +151,44 @@ function loadSave(): Pick<UiState, 'weekend' | 'drafts' | 'quali' | 'raceDraft'>
   }
 }
 
+function loadSeason(): (Pick<UiState, 'drafts' | 'quali' | 'raceDraft'> & { season: SeasonState }) | null {
+  try {
+    const raw = localStorage.getItem(SEASON_KEY);
+    if (!raw) return null;
+    const data = JSON.parse(raw);
+    return data?.season?.version === 1 ? data : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Atualiza o fim de semana atual (e a temporada, se for o caso). */
+function setWeekend(w: WeekendState) {
+  ui.weekend = w;
+  if (ui.mode === 'season' && ui.season) ui.season = updateWeekend(ui.season, w);
+}
+
+function resetDrafts() {
+  ui.drafts = [{ ...DEFAULT_SETUP }];
+  ui.active = 0;
+  ui.kind = 'aero';
+  ui.replayDone = false;
+}
+
 function go(screen: Screen) {
   replay?.stop();
   replay = null;
+  if (ui.mode === 'league' && !['results', 'replay'].includes(screen)) ui.weekend = ui.season?.weekend ?? null;
   ui.screen = screen;
   ui.error = '';
   render();
+  root.classList.remove('enter');
+  void root.offsetWidth;
+  root.classList.add('enter');
+  if (screen === 'results' && ui.fanfarePending) {
+    ui.fanfarePending = false;
+    chip.sfx('fanfare');
+  }
   window.scrollTo(0, 0);
 }
 
@@ -107,6 +207,18 @@ function attempt(fn: () => void) {
 function header(): string {
   const w = ui.weekend;
   if (!w) return '';
+  if (ui.mode === 'league' && ui.season && ui.league) {
+    return `${seasonHeader(ui.season)}<div class="row" style="margin:-8px 4px 12px">
+      <span class="muted">🌐 ${esc(ui.league.name)} · GP de ${esc(getTrack(w.trackId).name)} · Disponível: $${w.budget - (w.spent[w.playerTeamId] ?? 0)}M</span>
+      <button class="btn small secondary" data-act="goto" data-arg="hub">Agenda do GP</button>
+      <button class="btn small secondary" data-act="goto" data-arg="hq">QG</button></div>`;
+  }
+  if (ui.mode === 'season' && ui.season) {
+    return `${seasonHeader(ui.season)}<div class="row" style="margin:-8px 4px 12px">
+      <span class="muted">GP de ${esc(getTrack(w.trackId).name)} · Disponível: $${w.budget - (w.spent[w.playerTeamId] ?? 0)}M</span>
+      <button class="btn small secondary" data-act="goto" data-arg="hub">Agenda do GP</button>
+      <button class="btn small secondary" data-act="goto" data-arg="hq">QG</button></div>`;
+  }
   const team = getTeam(w.playerTeamId);
   const track = getTrack(w.trackId);
   const spent = w.spent[w.playerTeamId] ?? 0;
@@ -124,15 +236,21 @@ function header(): string {
 function titleView(): string {
   const saved = loadSave();
   return `<div class="title-screen">
+    <div class="title-lights">${'<span></span>'.repeat(5)}</div>
     <h1>GRANDE PRÊMIO 8-BIT</h1>
     <p class="muted">Gerência de F1 · Estratégia · Lendas das pistas</p>
     <div class="parade"><div class="lane">${TEAMS.map((t) => `<img class="px" src="${carSprite(t)}" alt="${esc(t.car)}">`).join('')}</div></div>
+    <p class="press-start">APERTE START</p>
     <div class="row" style="justify-content:center">
-      <button class="btn big" data-act="goto" data-arg="team">▶ Corrida rápida</button>
-      ${saved ? '<button class="btn big secondary" data-act="continue">Continuar fim de semana</button>' : ''}
+      <button class="btn big" data-act="new-season">🏆 Temporada</button>
+      <button class="btn big secondary" data-act="new-quick">▶ Corrida rápida</button>
+      ${lastLeague() ? `<button class="btn big" data-act="open-league" data-arg="${esc(lastLeague()!)}">🌐 Continuar liga online</button>` : ''}
+      <button class="btn big secondary" data-act="goto" data-arg="online">🌐 Multiplayer online</button>
+      ${loadSeason() ? '<button class="btn big secondary" data-act="continue-season">Continuar temporada</button>' : ''}
+      ${saved ? '<button class="btn big secondary" data-act="continue">Continuar corrida rápida</button>' : ''}
       <button class="btn big secondary" data-act="goto" data-arg="help">Como jogar</button>
     </div>
-    <p class="muted" style="margin-top:24px">Fase 1 · Modo solo contra a IA · Multiplayer online em breve</p>
+    <p class="muted" style="margin-top:24px">Temporada de 10 GPs, corrida rápida ou liga online com os amigos</p>
   </div>`;
 }
 
@@ -149,7 +267,10 @@ function helpView(): string {
     <p><b>Motor:</b> mais potência em troca de consumo e risco de quebra. Calor e altitude roubam potência (turbos sofrem menos com a altitude).</p>
     <p><b>Pneus:</b> macio é rápido e dura pouco. Cada composto tem uma faixa ideal de temperatura. Intermediário para chuva leve, chuva extrema para chuva forte.</p>
     <h3 class="yellow">Orçamento</h3>
-    <p>Você tem $55M por fim de semana para motor, asa e todos os jogos de pneus (classificação + corrida). O "melhor de tudo" não cabe no orçamento.</p>
+    <p><b>Corrida rápida:</b> $55M por fim de semana para motor, asa e todos os jogos de pneus. O "melhor de tudo" não cabe no orçamento.</p>
+    <p><b>Temporada:</b> o orçamento é o seu caixa. Peças compradas ficam na garagem, motores se desgastam a cada corrida e acidentes destroem a asa. Invista os prêmios em desenvolvimento: as rivais também investem.</p>
+    <h3 class="yellow">Sem tempo?</h3>
+    <p><b>⏩ Pular dia:</b> o engenheiro decide a sessão por você. <b>⏭ Simular fim de semana:</b> vai direto ao resultado.</p>
     <h3 class="yellow">Meteorologia</h3>
     <p>Chuva, calor e vento são sorteados para cada sessão. A previsão fica mais precisa a cada dia. Na classificação, você precisa apostar no tempo da corrida.</p>
     <button class="btn" data-act="goto" data-arg="title">Voltar</button>
@@ -177,7 +298,7 @@ function teamView(): string {
       </button>`,
     ).join('')}</div>
     <div class="row" style="margin-top:16px"><button class="btn secondary" data-act="goto" data-arg="title">Voltar</button>
-    <button class="btn big" data-act="goto" data-arg="track">Próximo ▶</button></div>`;
+    <button class="btn big" data-act="goto" data-arg="${ui.mode === 'season' ? 'season-setup' : 'track'}">Próximo ▶</button></div>`;
 }
 
 function trackView(): string {
@@ -209,6 +330,14 @@ function fmtDate(iso: string): string {
   return `${day} · ${d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}`;
 }
 
+const LIGHT_ICON: Record<Light, string> = { dia: '☀️ dia', entardecer: '🌇 entardecer', noite: '🌙 noturna' };
+
+/** Horário local no circuito (estilo F1 real), com a iluminação. */
+function circuitTime(track: Track, session: SessionId): string {
+  const t = track.times[session];
+  return `No circuito: ${t.local} em ${esc(track.city)} · ${LIGHT_ICON[t.light]}`;
+}
+
 const SESSION_SCREEN: Record<SessionId, Screen> = { teste: 'practice', classificacao: 'quali', corrida: 'race' };
 
 function hubView(): string {
@@ -220,16 +349,23 @@ function hubView(): string {
     .map((s, i) => {
       const status = i < w.completed ? 'done' : i === w.completed ? 'next' : '';
       const icon = i < w.completed ? '✓' : i === w.completed ? '▶' : '🔒';
-      return `<div class="item ${status}"><span>D${i + 1}</span><span>${SESSION_LABEL[s.session]}<br><span class="muted">${fmtDate(s.date)}</span></span><span>${icon}</span></div>`;
+      return `<div class="item ${status}"><span>D${i + 1}</span><span>${SESSION_LABEL[s.session]}<br><span class="muted">${fmtDate(s.date)} (seu horário)</span>
+        <br><span class="muted">${circuitTime(track, s.session)}</span></span><span>${icon}</span></div>`;
     })
     .join('');
+  const league = ui.mode === 'league' && ui.league;
   const action = next
-    ? `<button class="btn big" data-act="goto" data-arg="${SESSION_SCREEN[next.session]}">Ir para: ${SESSION_LABEL[next.session]} ▶</button>`
+    ? `<button class="btn big" data-act="goto" data-arg="${SESSION_SCREEN[next.session]}">${league ? (ui.league!.myDecision ? 'Revisar decisão' : 'Decidir') : 'Ir para'}: ${SESSION_LABEL[next.session]} ▶</button>
+       ${league ? '' : `<button class="btn secondary" data-act="skip-day" title="O engenheiro decide esta sessão por você">⏩ Pular dia</button>
+       <button class="btn secondary" data-act="skip-weekend" title="O engenheiro decide o resto do fim de semana">⏭ Simular fim de semana</button>`}`
     : '<button class="btn big" data-act="goto" data-arg="results">Ver resultado final ▶</button>';
   return `${header()}
+    ${league && next ? leagueSessionPanel(ui.league!, SESSION_LABEL[next.session]) : ''}
     <div class="grid two">
       <div class="panel schedule"><h2>Cronograma · GP de ${esc(track.name)}</h2>${schedule}
-        <p class="muted" style="margin-top:10px;font-size:8px">Modo corrida rápida: você pode antecipar a próxima sessão. No multiplayer, cada sessão roda no horário marcado.</p>
+        <p class="muted" style="margin-top:10px;font-size:8px">${league
+          ? 'Liga online: cada sessão roda às 20h do fuso da liga (mostrado no seu horário), ou antes se todos estiverem prontos.'
+          : 'Contra os bots você pode antecipar a próxima sessão, ou pular o dia e deixar o engenheiro decidir. No multiplayer, cada sessão roda no horário marcado.'}</p>
         <div class="row">${action}</div>
       </div>
       <div class="panel"><h2>A pista</h2>
@@ -244,11 +380,11 @@ function hubView(): string {
       </div>
     </div>
     <h2>Previsão do tempo</h2>
-    <div class="grid three">${fc.map((f, i) => forecastCard(f, `D${i + 1} · ${SESSION_LABEL[f.session]}`, fmtDate(w.schedule[i].date))).join('')}</div>
+    <div class="grid three">${fc.map((f, i) => forecastCard(f, `D${i + 1} · ${SESSION_LABEL[f.session]}`, `${fmtDate(w.schedule[i].date)} · ${LIGHT_ICON[track.times[f.session].light]}`)).join('')}</div>
     ${w.completed >= 1 ? `<div class="row"><button class="btn secondary" data-act="goto" data-arg="practice">Telemetria do teste</button>
       ${w.completed >= 2 ? '<button class="btn secondary" data-act="goto" data-arg="quali">Grid de largada</button>' : ''}
       ${w.completed >= 3 ? '<button class="btn secondary" data-act="goto" data-arg="results">Resultado da corrida</button>' : ''}</div>` : ''}
-    <div class="row" style="margin-top:12px"><button class="btn small danger" data-act="abandon">Abandonar fim de semana</button></div>`;
+    ${ui.mode === 'quick' ? '<div class="row" style="margin-top:12px"><button class="btn small danger" data-act="abandon">Abandonar fim de semana</button></div>' : ''}`;
 }
 
 function setupSummary(s: CarSetup): string {
@@ -284,12 +420,12 @@ function practiceView(): string {
     <div class="panel">
       <div class="tabs">${tabs}${ui.drafts.length < MAX_PRACTICE_RUNS ? '<button class="tab" data-act="add-draft">+ Novo acerto</button>' : ''}
         ${ui.drafts.length > 1 ? '<button class="tab" data-act="remove-draft">✕ Remover</button>' : ''}</div>
-      <div style="margin-bottom:10px">${setupSummary(draft)} <span class="muted">Custo na corrida: $${setupCost(draft)}M</span></div>
+      <div style="margin-bottom:10px">${setupSummary(draft)} <span class="muted">Custo na corrida: $${costFor(ui.weekend!, ui.weekend!.playerTeamId, draft)}M</span></div>
       ${kindTabs()}
-      ${partPicker(ui.kind, draft[ui.kind])}
+      ${partPicker(ui.kind, draft[ui.kind], 'pick', false, ownedLabels())}
     </div>
     <div class="row"><button class="btn secondary" data-act="goto" data-arg="hub">Voltar</button>
-      <button class="btn big" data-act="run-practice">Rodar teste (${ui.drafts.length} acerto${ui.drafts.length > 1 ? 's' : ''}) ▶</button></div>`;
+      <button class="btn big" data-act="run-practice"${ui.busy ? ' disabled' : ''}>${ui.mode === 'league' ? `${sentLabel()}Enviar ${ui.drafts.length} acerto${ui.drafts.length > 1 ? 's' : ''} ▶` : `Rodar teste (${ui.drafts.length} acerto${ui.drafts.length > 1 ? 's' : ''}) ▶`}</button></div>`;
 }
 
 function practiceResultsView(): string {
@@ -340,7 +476,7 @@ function qualiView(): string {
   const w = ui.weekend!;
   if (w.completed >= 2) return gridView();
   const fc = forecasts(w);
-  const cost = setupCost(ui.quali);
+  const cost = costFor(w, w.playerTeamId, ui.quali);
   const tested = w.practiceRuns
     .map((r, i) => `<button class="btn small secondary" data-act="use-run" data-arg="${i}">Usar acerto ${i + 1} (${formatLap(r.best)})</button>`)
     .join('');
@@ -351,17 +487,17 @@ function qualiView(): string {
       ${forecastCard(fc[2], 'Previsão p/ corrida', fmtDate(w.schedule[2].date))}
       <div class="panel tight"><h3 class="red">Parque fechado</h3>
         <p style="font-size:8px">A aerodinâmica e o motor escolhidos aqui <b>ficam travados para a corrida</b>. Só os pneus e a estratégia podem mudar. Pense no tempo da corrida, não só no de hoje!</p>
-        ${budgetMeter(cost, w.budget, 'Custo do acerto')}
+        ${budgetMeter(cost, w.budget, ui.mode === 'season' ? 'Custo (peças novas + pneu)' : 'Custo do acerto')}
         <p class="muted" style="font-size:8px">Sobram $${Math.max(0, w.budget - cost)}M para os pneus da corrida.</p></div>
     </div>
     <div class="panel">
       <div class="row" style="margin-bottom:8px">${tested}</div>
       <div style="margin-bottom:10px">${setupSummary(ui.quali)}</div>
       ${kindTabs()}
-      ${partPicker(ui.kind, ui.quali[ui.kind], 'pick-quali')}
+      ${partPicker(ui.kind, ui.quali[ui.kind], 'pick-quali', false, ownedLabels())}
     </div>
     <div class="row"><button class="btn secondary" data-act="goto" data-arg="hub">Voltar</button>
-      <button class="btn big" data-act="run-quali"${cost > w.budget ? ' disabled' : ''}>Volta rápida! ▶</button></div>`;
+      <button class="btn big" data-act="run-quali"${cost > w.budget || ui.busy ? ' disabled' : ''}>${ui.mode === 'league' ? `${sentLabel()}Enviar acerto ▶` : 'Volta rápida! ▶'}</button></div>`;
 }
 
 function gridView(): string {
@@ -443,14 +579,14 @@ function raceView(): string {
       ${err ? `<div class="error">${esc(err)}</div>` : ''}
     </div>
     <div class="row"><button class="btn secondary" data-act="goto" data-arg="hub">Voltar</button>
-      <button class="btn big" data-act="run-race"${err ? ' disabled' : ''}>Luzes apagadas! ▶</button></div>`;
+      <button class="btn big" data-act="run-race"${err || ui.busy ? ' disabled' : ''}>${ui.mode === 'league' ? `${sentLabel()}Enviar estratégia ▶` : 'Luzes apagadas! ▶'}</button></div>`;
 }
 
 function replayView(): string {
   const w = ui.weekend!;
   return `${header()}
     <h1>GP de ${esc(getTrack(w.trackId).name)}</h1>
-    <p class="muted">${esc(describeWeather(w.weather.corrida))}</p>
+    <p class="muted">${esc(describeWeather(w.weather.corrida))} · ${circuitTime(getTrack(w.trackId), 'corrida')}</p>
     <div class="replay">
       <div>
         <div class="hud" id="hud"></div>
@@ -478,11 +614,8 @@ function resultsView(): string {
     me.points > 0 ? `P${me.position} e ${me.points} pontos.` : `P${me.position}. Ainda dá para ajustar a estratégia.`;
   return `${header()}
     <h1>Resultado · GP de ${esc(getTrack(w.trackId).name)}</h1>
-    <div class="panel row">
-      <img class="px" src="${carSprite(winner)}" width="160" height="56" alt="${esc(winner.car)}">
-      <div><div class="yellow">🏆 ${esc(winner.driver.name)}</div><div class="muted">${esc(winner.car)}</div>
-      <p style="margin-top:8px">${esc(msg)}</p></div>
-    </div>
+    ${podium(race.classification.filter((c) => c.status === 'finished').slice(0, 3).map((c) => c.teamId), w.playerTeamId)}
+    <div class="panel tight"><span class="yellow">🏆 ${esc(winner.driver.name)}</span> <span class="muted">(${esc(winner.car)})</span> · ${esc(msg)}</div>
     <div class="panel"><div class="table-wrap"><table>
       <tr><th>Pos</th><th>Piloto</th><th class="num">Grid</th><th>Estratégia</th><th class="num">Paradas</th><th class="num">Melhor volta</th><th class="num">Tempo</th><th class="num">Pts</th></tr>
       ${race.classification
@@ -500,9 +633,228 @@ function resultsView(): string {
     </table></div></div>
     <div class="row">
       <button class="btn secondary" data-act="goto" data-arg="replay">Ver replay</button>
-      <button class="btn secondary" data-act="goto" data-arg="hub">Agenda</button>
-      <button class="btn big" data-act="new">Novo fim de semana ▶</button>
+      ${ui.mode === 'league'
+        ? '<button class="btn big" data-act="goto" data-arg="hq">Voltar ao QG ▶</button>'
+        : ui.mode === 'season'
+        ? '<button class="btn big" data-act="finish-round">Encerrar GP e voltar ao QG ▶</button>'
+        : '<button class="btn secondary" data-act="goto" data-arg="hub">Agenda</button><button class="btn big" data-act="new-quick">Novo fim de semana ▶</button>'}
     </div>`;
+}
+
+function podium(top: string[], playerId: string): string {
+  const confetti = Array.from({ length: 36 }, (_, i) => {
+    const colors = ['#ffd23f', '#e43b44', '#3b8bea', '#3fbf6f', '#f4f4f4', '#d67bff'];
+    return `<i style="left:${(i * 37) % 100}%;background:${colors[i % colors.length]};animation-delay:${((i * 0.23) % 2.4).toFixed(2)}s;animation-duration:${(2.2 + ((i * 0.37) % 1.6)).toFixed(2)}s"></i>`;
+  }).join('');
+  const step = (pos: number) => {
+    const id = top[pos - 1];
+    if (!id) return `<div class="step p${pos}"><div class="block">${pos}</div></div>`;
+    const t = getTeam(id);
+    return `<div class="step p${pos}${id === playerId ? ' me' : ''}">
+      <img class="px podium-helmet" src="${helmetSprite(t)}" alt="">
+      <img class="px podium-car" src="${carSprite(t)}" alt="${esc(t.car)}">
+      <div class="name">${esc(t.driver.shortName)}</div>
+      <div class="block">${pos}</div></div>`;
+  };
+  return `<div class="panel podium-wrap"><div class="confetti">${confetti}</div>
+    <div class="podium">${step(2)}${step(1)}${step(3)}</div></div>`;
+}
+
+// ------------------------------------------------------------ liga online --
+
+function sentLabel(): string {
+  return ui.league?.myDecision ? '✓ Enviado · Reenviar: ' : '';
+}
+
+function leagueHq(): string {
+  const v = ui.league!;
+  const s = ui.season!;
+  const extra = v.lastWeekend ? '<button class="btn secondary" data-act="league-last">Último GP: resultado e replay</button>' : '';
+  const bell = pushState() === 'desligado'
+    ? '<div class="panel tight row between"><span>🔔 Ligue as notificações para receber prazos e resultados no celular.</span><button class="btn small" data-act="push-on">Ligar</button></div>'
+    : '';
+  const panel = bell + (v.session ? leagueSessionPanel(v, SESSION_LABEL[v.session]) : '');
+  return panel + hqView(s, ui.hqTab, { shopOpen: !!s.weekend && s.weekend.completed === 0, extra, online: true });
+}
+
+const LAST_LEAGUE_KEY = 'f1m8.lastLeague';
+
+function lastLeague(): string | null {
+  try {
+    return getToken() ? localStorage.getItem(LAST_LEAGUE_KEY) : null;
+  } catch {
+    return null;
+  }
+}
+
+function applyLeague(v: LeagueView) {
+  const prev = ui.league;
+  try {
+    localStorage.setItem(LAST_LEAGUE_KEY, v.id);
+  } catch {
+    /* sem armazenamento */
+  }
+  ui.league = v;
+  ui.season = v.season;
+  if (!['results', 'replay'].includes(ui.screen)) ui.weekend = v.season?.weekend ?? null;
+  const w = v.season?.weekend;
+  // Nova sessão aberta: prepara os rascunhos (com a decisão já enviada, se houver).
+  if (w && (!prev || prev.session !== v.session || prev.season?.round !== v.season?.round)) {
+    const d = v.myDecision;
+    if (v.session === 'teste') {
+      ui.drafts = Array.isArray(d) ? (d as CarSetup[]) : [{ ...DEFAULT_SETUP }];
+      ui.active = 0;
+    } else if (v.session === 'classificacao') {
+      ui.quali = d ? (d as CarSetup) : { ...([...w.practiceRuns].sort((a, b) => a.best - b.best)[0]?.setup ?? DEFAULT_SETUP) };
+    } else if (v.session === 'corrida') {
+      const q = w.setups[w.playerTeamId];
+      ui.raceDraft = d ? (d as RaceStrategy) : { stints: [q.tyre, q.tyre], pitLaps: evenPits(1, getTrack(w.trackId).laps), mode: 'normal' };
+    }
+  }
+  if (prev && v.season && prev.season && v.season.results.length > prev.season.results.length) {
+    const r = v.season.results[v.season.results.length - 1];
+    ui.toast = `🏁 Resultado do GP de ${getTrack(r.trackId).name} disponível!`;
+    chip.sfx('fanfare');
+  } else if (prev && prev.session !== v.session && v.session) {
+    ui.toast = `Nova sessão aberta: ${SESSION_LABEL[v.session]}.`;
+  }
+}
+
+/** Executa uma chamada à API mostrando erros na tela. */
+function remote(fn: () => Promise<void>) {
+  ui.busy = true;
+  ui.error = '';
+  render();
+  fn()
+    .catch((e: unknown) => {
+      ui.error = e instanceof Error ? e.message : String(e);
+    })
+    .finally(() => {
+      ui.busy = false;
+      render();
+    });
+}
+
+function loadConfig() {
+  if (ui.config) return;
+  api
+    .config()
+    .then((c) => {
+      ui.config = c;
+      if (ui.screen === 'online') mountGoogle();
+    })
+    .catch(() => undefined);
+}
+
+function mountGoogle() {
+  const el = root.querySelector<HTMLElement>('#google-btn') ?? root.querySelector<HTMLElement>('#google-link');
+  if (!el || !ui.config?.googleClientId || el.childElementCount) return;
+  mountGoogleButton(el, ui.config.googleClientId, (credential) =>
+    remote(async () => {
+      const r = await api.google(credential);
+      ui.toast = r.linked ? 'Conta Google vinculada ao seu perfil!' : 'Login com Google feito!';
+      ui.me = await api.me();
+      const code = pendingInvite();
+      if (code) await joinByCode(code);
+    }),
+  ).catch(() => undefined);
+}
+
+function loadMe() {
+  if (!getToken()) return;
+  ui.meLoading = true;
+  remote(async () => {
+    try {
+      ui.me = await api.me();
+    } finally {
+      ui.meLoading = false;
+    }
+  });
+}
+
+function openLeague(id: string) {
+  remote(async () => {
+    const v = await api.league(id);
+    ui.mode = 'league';
+    ui.league = null;
+    applyLeague(v);
+    ui.toast = '';
+    ui.hqTab = 'calendario';
+    go(v.status === 'lobby' ? 'lobby' : v.status === 'finished' ? 'champion' : 'hq');
+  });
+}
+
+let pollTimer = 0;
+function startPolling() {
+  clearInterval(pollTimer);
+  pollTimer = window.setInterval(() => {
+    const v = ui.league;
+    if (ui.mode !== 'league' || !v || ui.busy || ui.screen === 'replay' || document.hidden) return;
+    api
+      .league(v.id)
+      .then((nv) => {
+        if (nv.rev === ui.league?.rev) {
+          // Só atualiza a contagem regressiva do prazo.
+          if (['hub', 'hq'].includes(ui.screen)) render();
+          return;
+        }
+        applyLeague(nv);
+        if (ui.screen === 'lobby' && nv.status !== 'lobby') go('hq');
+        else if (nv.status === 'finished' && ui.screen === 'hq') go('champion');
+        else render();
+      })
+      .catch(() => undefined);
+  }, 15000);
+}
+
+/** Na temporada, peças da garagem aparecem como "na garagem" em vez do preço. */
+function ownedLabels(): Record<string, string> | undefined {
+  const s = ui.season;
+  if (ui.mode !== 'season' || !s) return undefined;
+  const out: Record<string, string> = {};
+  for (const a of s.ownedAero) out[a] = '✓ garagem';
+  for (const e of s.engines) {
+    const life = getEngine(e.id).life;
+    out[e.id] = `✓ ${e.races}/${life} corr. ×${engineWearMul(e).toFixed(1)}`;
+  }
+  return out;
+}
+
+function afterSkip(before: number) {
+  const w = ui.weekend!;
+  if (w.completed >= 1 && before < 1 && w.practiceRuns.length) {
+    ui.quali = { ...[...w.practiceRuns].sort((a, b) => a.best - b.best)[0].setup };
+  }
+  if (w.completed >= 2 && before < 2) {
+    const q = w.setups[w.playerTeamId];
+    ui.quali = { ...q };
+    ui.raceDraft = { stints: [q.tyre, q.tyre], pitLaps: evenPits(1, getTrack(w.trackId).laps), mode: 'normal' };
+  }
+  save();
+  if (w.completed >= 3) {
+    ui.replayDone = true;
+    ui.fanfarePending = true;
+    go('results');
+  } else {
+    go('hub');
+  }
+}
+
+function seasonSetupView(): string {
+  const team = getTeam(ui.teamId);
+  return `<h1>Nova temporada</h1>
+    <div class="panel row">
+      <img class="px" src="${carSprite(team)}" width="160" height="56" alt="${esc(team.car)}">
+      <div><div class="yellow">${esc(team.driver.name)}</div><div class="muted">${esc(team.car)} (${team.year})</div></div>
+    </div>
+    <div class="panel"><h2>Calendário</h2><div class="row">${SEASON_CALENDAR.map((id, i) => `<span class="pill">${i + 1}. ${esc(getTrack(id).name)}</span>`).join('')}</div>
+      <p style="margin-top:10px">10 GPs, um a cada 3 dias. Você começa com <span class="green">$150M</span>, recebe $12M de patrocínio por GP e prêmios pela posição de chegada.</p>
+      <p class="muted" style="font-size:8px">Peças compradas ficam na garagem. Motores se desgastam, acidentes destroem a asa, e o dinheiro também serve para desenvolver o carro.</p></div>
+    <div class="panel tight"><h3>Dificuldade da IA</h3><div class="tabs">${DIFFICULTIES.map(
+      (d) => `<button class="tab${d.id === ui.difficulty ? ' active' : ''}" data-act="difficulty" data-arg="${d.id}">${d.label}</button>`,
+    ).join('')}</div></div>
+    <div class="row"><button class="btn secondary" data-act="goto" data-arg="team">Voltar</button>
+    <button class="btn big" data-act="start-season">Começar temporada ▶</button></div>`;
 }
 
 // ------------------------------------------------------------- render ------
@@ -510,12 +862,28 @@ function resultsView(): string {
 function render() {
   const views: Record<Screen, () => string> = {
     title: titleView, help: helpView, team: teamView, track: trackView, hub: hubView,
+    'season-setup': seasonSetupView,
+    hq: () => (ui.mode === 'league' ? leagueHq() : hqView(ui.season!, ui.hqTab)),
+    champion: () => championView(ui.season!),
+    online: () => onlineView(ui.me, ui.meLoading, ui.deviceLink),
+    ranking: () => rankingView(ui.ranking),
+    lobby: () => (ui.league ? lobbyView(ui.league) : onlineView(ui.me, false)),
     practice: practiceView, quali: qualiView, race: raceView, replay: replayView, results: resultsView,
   };
-  const needsWeekend = !['title', 'help', 'team', 'track'].includes(ui.screen);
-  if (needsWeekend && !ui.weekend) ui.screen = 'title';
-  root.innerHTML = (ui.error ? `<div class="error">${esc(ui.error)}</div>` : '') + views[ui.screen]();
+  const needsWeekend = !['title', 'help', 'team', 'track', 'season-setup', 'hq', 'champion', 'online', 'lobby', 'ranking'].includes(ui.screen);
+  if (needsWeekend && !ui.weekend) ui.screen = ui.season && ui.mode === 'season' ? 'hq' : 'title';
+  if (['hq', 'champion'].includes(ui.screen) && !ui.season) ui.screen = 'title';
+  // A animação de entrada só toca na troca de tela (go), não a cada redesenho.
+  root.classList.remove('enter');
+  const toolbar = `<div class="toolbar">
+    <button class="tab" data-act="sound" title="Som">${chip.muted ? '🔇 SOM' : '🔊 SOM'}</button>
+    <button class="tab${document.body.classList.contains('crt') ? ' active' : ''}" data-act="crt" title="Efeito de TV antiga">📺 CRT</button></div>`;
+  const toast = ui.toast ? `<div class="toast">${esc(ui.toast)}</div>` : '';
+  root.innerHTML = toolbar + toast + (ui.error ? `<div class="error">${esc(ui.error)}</div>` : '') + views[ui.screen]();
+  if (['title', 'help', 'team', 'track'].includes(ui.screen)) chip.playTheme();
+  else chip.stopTheme();
   root.querySelectorAll<HTMLCanvasElement>('canvas[data-track]').forEach((c) => drawTrack(c, getTrack(c.dataset.track!)));
+  if (ui.screen === 'online') mountGoogle();
   if (ui.screen === 'replay' && !replay) {
     replay = new Replay(
       root.querySelector('#replay-canvas')!,
@@ -525,6 +893,7 @@ function render() {
       ui.weekend!,
       () => {
         ui.replayDone = true;
+        ui.fanfarePending = true;
         root.querySelector('#to-results')?.removeAttribute('hidden');
       },
     );
@@ -540,11 +909,39 @@ function handle(act: string, arg: string, el: HTMLElement) {
   const w = ui.weekend;
   switch (act) {
     case 'goto':
+      ui.toast = '';
+      if (arg === 'online') {
+        if (ui.mode === 'league') {
+          ui.mode = 'quick';
+          ui.league = null;
+          ui.season = null;
+          ui.weekend = null;
+        }
+        ui.deviceLink = null;
+        go('online');
+        loadConfig();
+        loadMe();
+        return;
+      }
+      if (arg === 'ranking') {
+        ui.ranking = null;
+        go('ranking');
+        api.ranking().then((r) => {
+          ui.ranking = r.ranking;
+          if (ui.screen === 'ranking') render();
+        }, (e: Error) => {
+          ui.error = e.message;
+          render();
+        });
+        return;
+      }
       go(arg as Screen);
       return;
     case 'continue': {
       const s = loadSave();
       if (s) Object.assign(ui, s);
+      ui.mode = 'quick';
+      ui.season = null;
       go('hub');
       return;
     }
@@ -558,16 +955,118 @@ function handle(act: string, arg: string, el: HTMLElement) {
       ui.difficulty = arg as Difficulty['id'];
       break;
     case 'start':
+      ui.mode = 'quick';
+      ui.season = null;
       ui.weekend = createWeekend({ trackId: ui.trackId, playerTeamId: ui.teamId, difficulty: ui.difficulty });
-      ui.drafts = [{ ...DEFAULT_SETUP }];
-      ui.active = 0;
-      ui.kind = 'aero';
-      ui.replayDone = false;
+      resetDrafts();
       save();
       go('hub');
       return;
-    case 'new':
+    case 'new-quick':
+      ui.league = null;
+      ui.mode = 'quick';
+      ui.season = null;
+      ui.weekend = null;
       go('team');
+      return;
+    case 'new-season':
+      ui.league = null;
+      ui.mode = 'season';
+      ui.season = null;
+      ui.weekend = null;
+      go('team');
+      return;
+    case 'start-season':
+      ui.mode = 'season';
+      ui.season = createSeason({ playerTeamId: ui.teamId, difficulty: ui.difficulty });
+      ui.weekend = null;
+      ui.hqTab = 'calendario';
+      save();
+      go('hq');
+      return;
+    case 'continue-season': {
+      const d = loadSeason();
+      if (!d) return;
+      ui.league = null;
+      ui.mode = 'season';
+      ui.season = d.season;
+      ui.weekend = d.season.weekend;
+      ui.drafts = d.drafts;
+      ui.quali = d.quali;
+      ui.raceDraft = d.raceDraft;
+      go('hq');
+      return;
+    }
+    case 'hq-tab':
+      ui.hqTab = arg as HqTab;
+      break;
+    case 'start-round':
+      attempt(() => {
+        ui.season = startRound(ui.season!);
+        ui.weekend = ui.season.weekend;
+        resetDrafts();
+        save();
+        go('hub');
+      });
+      return;
+    case 'finish-round':
+      attempt(() => {
+        ui.season = finishRound(ui.season!);
+        ui.weekend = null;
+        ui.hqTab = 'calendario';
+        save();
+        go(ui.season.finished ? 'champion' : 'hq');
+        if (ui.season.finished) chip.sfx('fanfare');
+      });
+      return;
+    case 'abandon-season':
+      if (!confirm('Abandonar a temporada? O progresso será perdido.')) return;
+      ui.season = null;
+      ui.weekend = null;
+      save();
+      go('title');
+      return;
+    case 'buy-dev':
+      if (ui.mode === 'league') {
+        remote(async () => applyLeague(await api.buy(ui.league!.id, 'dev', arg)));
+        return;
+      }
+      attempt(() => {
+        ui.season = buyDevelopment(ui.season!, arg as DevArea);
+        chip.sfx('select');
+      });
+      break;
+    case 'buy-engine':
+      if (ui.mode === 'league') {
+        remote(async () => applyLeague(await api.buy(ui.league!.id, 'engine', arg)));
+        return;
+      }
+      attempt(() => {
+        ui.season = buyEngine(ui.season!, arg);
+      });
+      break;
+    case 'buy-aero':
+      if (ui.mode === 'league') {
+        remote(async () => applyLeague(await api.buy(ui.league!.id, 'aero', arg)));
+        return;
+      }
+      attempt(() => {
+        ui.season = buyAero(ui.season!, arg);
+      });
+      break;
+    case 'skip-day':
+      attempt(() => {
+        const before = w!.completed;
+        setWeekend(skipSession(w!));
+        afterSkip(before);
+      });
+      return;
+    case 'skip-weekend':
+      attempt(() => {
+        const before = w!.completed;
+        setWeekend(simulateRestOfWeekend(w!));
+        afterSkip(before);
+      });
       return;
     case 'abandon':
       if (!confirm('Abandonar este fim de semana?')) return;
@@ -602,10 +1101,110 @@ function handle(act: string, arg: string, el: HTMLElement) {
     case 'use-run':
       ui.quali = { ...w!.practiceRuns[Number(arg)].setup };
       break;
+    case 'online-register': {
+      const nick = (root.querySelector('#nick') as HTMLInputElement | null)?.value ?? '';
+      remote(async () => {
+        await api.register(nick);
+        ui.me = await api.me();
+        const code = pendingInvite();
+        if (code) await joinByCode(code);
+      });
+      return;
+    }
+    case 'push-on':
+      remote(async () => {
+        await enablePush();
+        ui.toast = 'Notificações ligadas neste aparelho!';
+      });
+      return;
+    case 'push-off':
+      remote(async () => {
+        await disablePush();
+        ui.toast = 'Notificações desligadas.';
+      });
+      return;
+    case 'device-link':
+      remote(async () => {
+        const { token } = await api.newDeviceToken();
+        ui.deviceLink = `${location.origin}${location.pathname}?perfil=${encodeURIComponent(token)}`;
+        ui.me = await api.me();
+      });
+      return;
+    case 'rotate-token':
+      if (!confirm('Desconectar todos os outros aparelhos? Eles vão precisar de um link novo para entrar.')) return;
+      remote(async () => {
+        await api.rotate();
+        ui.deviceLink = null;
+        ui.me = await api.me();
+        ui.toast = 'Pronto: só este aparelho continua conectado.';
+      });
+      return;
+    case 'online-logout':
+      if (!confirm('Sair deste navegador? Sem o acesso salvo, você não consegue voltar às suas ligas.')) return;
+      api.logout();
+      ui.me = null;
+      break;
+    case 'online-create': {
+      const name = (root.querySelector('#league-name') as HTMLInputElement).value;
+      const diff = (root.querySelector('#league-diff') as HTMLSelectElement).value;
+      const pace = (root.querySelector('#league-pace') as HTMLSelectElement).value;
+      remote(async () => {
+        const v = await api.create(name, diff, pace);
+        ui.mode = 'league';
+        ui.league = null;
+        applyLeague(v);
+        go('lobby');
+      });
+      return;
+    }
+    case 'online-join': {
+      const code = (root.querySelector('#league-code') as HTMLInputElement).value;
+      remote(() => joinByCode(code));
+      return;
+    }
+    case 'open-league':
+      openLeague(arg);
+      return;
+    case 'league-team':
+      remote(async () => applyLeague(await api.team(ui.league!.id, arg)));
+      return;
+    case 'league-leave':
+      remote(async () => applyLeague(await api.leave(ui.league!.id)));
+      return;
+    case 'league-start':
+      if (!confirm('Dar a largada? Depois disso ninguém mais entra na liga.')) return;
+      remote(async () => {
+        applyLeague(await api.start(ui.league!.id));
+        go('hq');
+      });
+      return;
+    case 'league-force':
+      if (!confirm('Rodar a sessão agora? Quem não enviou fica com a decisão do engenheiro.')) return;
+      remote(async () => applyLeague(await api.force(ui.league!.id)));
+      return;
+    case 'league-last':
+      ui.weekend = ui.league!.lastWeekend;
+      ui.replayDone = true;
+      go('results');
+      return;
+    case 'copy-invite':
+      void navigator.clipboard?.writeText(arg).then(() => {
+        ui.toast = 'Link copiado!';
+        render();
+      });
+      return;
     case 'run-practice':
+      if (ui.mode === 'league') {
+        remote(async () => {
+          applyLeague(await api.decision(ui.league!.id, 'teste', ui.drafts));
+          ui.toast = 'Acertos enviados! O teste roda no prazo ou quando todos estiverem prontos.';
+          go('hub');
+        });
+        return;
+      }
       attempt(() => {
-        ui.weekend = runPractice(w!, ui.drafts);
-        const bestRun = [...ui.weekend.practiceRuns].sort((a, b) => a.best - b.best)[0];
+        setWeekend(runPractice(w!, ui.drafts));
+        const bestRun = [...ui.weekend!.practiceRuns].sort((a, b) => a.best - b.best)[0];
         ui.quali = { ...bestRun.setup };
         ui.kind = 'aero';
         save();
@@ -613,9 +1212,17 @@ function handle(act: string, arg: string, el: HTMLElement) {
       });
       return;
     case 'run-quali':
+      if (ui.mode === 'league') {
+        remote(async () => {
+          applyLeague(await api.decision(ui.league!.id, 'classificacao', ui.quali));
+          ui.toast = 'Acerto da classificação enviado!';
+          go('hub');
+        });
+        return;
+      }
       attempt(() => {
-        ui.weekend = runQualifying(w!, ui.quali);
-        const laps = getTrack(ui.weekend.trackId).laps;
+        setWeekend(runQualifying(w!, ui.quali));
+        const laps = getTrack(ui.weekend!.trackId).laps;
         ui.raceDraft = { stints: [ui.quali.tyre, ui.quali.tyre], pitLaps: evenPits(1, laps), mode: 'normal' };
         save();
         go('quali');
@@ -644,13 +1251,33 @@ function handle(act: string, arg: string, el: HTMLElement) {
       break;
     }
     case 'run-race':
+      if (ui.mode === 'league') {
+        remote(async () => {
+          applyLeague(await api.decision(ui.league!.id, 'corrida', ui.raceDraft));
+          ui.toast = 'Estratégia enviada! Boa corrida!';
+          go('hub');
+        });
+        return;
+      }
       attempt(() => {
-        ui.weekend = runRace(w!, ui.raceDraft);
+        setWeekend(runRace(w!, ui.raceDraft));
         ui.replayDone = false;
         save();
         go('replay');
       });
       return;
+    case 'sound':
+      chip.setMuted(!chip.muted);
+      break;
+    case 'crt': {
+      const on = document.body.classList.toggle('crt');
+      try {
+        localStorage.setItem(CRT_KEY, on ? '1' : '0');
+      } catch {
+        /* sem armazenamento */
+      }
+      break;
+    }
     case 'speed':
       replay?.setSpeed(Number(arg));
       return;
@@ -664,17 +1291,68 @@ function handle(act: string, arg: string, el: HTMLElement) {
   render();
 }
 
+
+
 export function mount(el: HTMLElement) {
   root = el;
+  try {
+    if (localStorage.getItem(CRT_KEY) === '1') document.body.classList.add('crt');
+  } catch {
+    /* sem armazenamento */
+  }
+  const SELECT_ACTS = new Set(['team', 'track', 'pick', 'pick-quali', 'difficulty', 'stops', 'mode', 'kind', 'draft']);
   root.addEventListener('click', (e) => {
+    // O navegador só libera áudio depois de um gesto do usuário.
+    const firstUnlock = !chip.ready;
+    chip.unlock();
+    if (firstUnlock && ['title', 'help', 'team', 'track'].includes(ui.screen)) chip.playTheme();
     const t = (e.target as HTMLElement).closest<HTMLElement>('[data-act]');
     if (!t || t.tagName === 'SELECT' || t.tagName === 'INPUT') return;
     if ((t as HTMLButtonElement).disabled) return;
+    chip.sfx(SELECT_ACTS.has(t.dataset.act!) ? 'select' : 'blip');
     handle(t.dataset.act!, t.dataset.arg ?? '', t);
   });
   root.addEventListener('change', (e) => {
     const t = e.target as HTMLElement;
     if (t.dataset.act) handle(t.dataset.act, t.dataset.arg ?? '', t);
   });
+  const params = new URLSearchParams(location.search);
+  const profile = params.get('perfil');
+  const open = params.get('abrir');
+  if (profile && /^[\w-]+\.[\w-]+$/.test(profile)) {
+    // Link "levar perfil para outro aparelho".
+    useToken(profile);
+    history.replaceState(null, '', location.pathname);
+    ui.screen = 'online';
+    ui.toast = 'Perfil conectado neste aparelho!';
+    loadConfig();
+    loadMe();
+  } else if (open && getToken()) {
+    // Clique numa notificação: abre a liga.
+    history.replaceState(null, '', location.pathname);
+    openLeague(open);
+  }
+  const code = pendingInvite();
+  if (code) {
+    ui.screen = 'online';
+    loadConfig();
+    if (getToken()) remote(() => joinByCode(code));
+  }
+  startPolling();
   render();
+}
+
+
+function pendingInvite(): string | null {
+  return new URLSearchParams(location.search).get('liga');
+}
+
+async function joinByCode(code: string) {
+  const { leagueId } = await api.join(code);
+  history.replaceState(null, '', location.pathname);
+  const v = await api.league(leagueId);
+  ui.mode = 'league';
+  ui.league = null;
+  applyLeague(v);
+  go(v.status === 'lobby' ? 'lobby' : 'hq');
 }
