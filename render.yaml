@@ -3,9 +3,11 @@
 # basta colocar a connection string em DATABASE_URL.
 services:
   - type: web
-    name: grande-premio-8bit
+    name: estrategiaf1
     runtime: node
     plan: free
+    # Região mais próxima do Brasil entre as do Render (não dá para trocar depois).
+    region: virginia
     buildCommand: npm ci && npm run build
     startCommand: npm start
     healthCheckPath: /health

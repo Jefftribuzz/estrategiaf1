@@ -8,10 +8,10 @@ estratégia. O jogo simula o resto.
 
 ```bash
 npm install
-npm run dev          # jogo em http://localhost:5173 (modos solo)
+npm run dev          # jogo em http://localhost:5173 (sem a landing)
 npm run dev:server   # servidor do multiplayer em http://localhost:8787
 npm test             # testes (física, equilíbrio, temporada, liga, API)
-npm run build        # jogo em dist/ + servidor em dist-server/
+npm run build        # landing em dist/, jogo em dist/jogar/, servidor em dist-server/
 npm start            # sobe o servidor, que serve o jogo e a API
 ```
 
@@ -117,32 +117,48 @@ fuso dele.
   convites e API), cabeçalhos de segurança (CSP, HSTS, nosniff, anti-iframe) e
   tokens guardados só como hash.
 
+## Domínio: estrategiaf1.com.br
+
+Um único serviço no Render atende o domínio inteiro:
+
+| Endereço | O que é |
+|---|---|
+| `estrategiaf1.com.br/` | landing page (pasta `landing/`) |
+| `estrategiaf1.com.br/jogar/` | o jogo (PWA instalável) |
+| `estrategiaf1.com.br/api/` | servidor do multiplayer |
+
+Links antigos com `?liga=`, `?perfil=` ou `?abrir=` na raiz são redirecionados
+para `/jogar/`. Para editar a landing, mexa em `landing/index.html` e
+`landing/style.css`. As imagens ficam em `landing/img/`.
+
 ## Publicar online (grátis)
 
-1. **Banco de dados (Supabase)**: crie um projeto em https://supabase.com.
-   Em *Project Settings → Database → Connection string → URI*, copie a string
-   (modo *Session pooler*) e troque `[YOUR-PASSWORD]` pela senha do projeto.
-2. **Servidor (Render)**: em https://render.com, escolha *New → Blueprint* e
-   aponte para este repositório. O `render.yaml` já configura tudo. Quando ele
-   pedir `DATABASE_URL`, cole a string do Supabase.
-3. Abra o endereço que o Render criar (ex.: `https://grande-premio-8bit.onrender.com`)
-   e mande o link da liga para os amigos.
+1. **Banco (Supabase)**: no projeto, clique em **Connect** e copie a URI do
+   **Session pooler** (o Render só acessa por IPv4, e a conexão direta do
+   Supabase é IPv6). Troque `[YOUR-PASSWORD]` pela senha do banco.
+2. **Servidor (Render)**: em *New → Blueprint*, conecte o GitHub e escolha o
+   repositório `estrategiaf1`. O `render.yaml` cria o serviço `estrategiaf1`.
+   Quando ele pedir `DATABASE_URL`, cole a URI do passo 1. `GOOGLE_CLIENT_ID`
+   pode ficar vazio.
+3. **Teste** no endereço provisório `https://estrategiaf1.onrender.com` (ou o
+   nome que o Render mostrar).
+4. **Domínio**: no serviço do Render, abra *Settings → Custom Domains* e
+   adicione `estrategiaf1.com.br` e `www.estrategiaf1.com.br`. O Render mostra
+   os registros DNS; crie-os no Registro.br (*DNS → Editar zona*):
+   - `estrategiaf1.com.br` → registro **A** com o IP que o Render indicar;
+   - `www` → registro **CNAME** para o endereço `.onrender.com` do serviço.
 
-4. **Manter acordado (para as notificações saírem na hora)**: o plano grátis
-   do Render dorme depois de 15 min sem acesso, e dormindo não manda
-   lembretes. Crie uma conta grátis em https://cron-job.org e agende um acesso
-   a `https://SEU-ENDERECO.onrender.com/health` a cada 10 minutos. O plano
-   grátis do Render cobre um serviço ligado o mês inteiro.
-5. **Login com Google (opcional)**: no https://console.cloud.google.com, crie
-   um *OAuth Client ID* do tipo *Web application*, com o endereço do Render em
-   *Authorized JavaScript origins*, e coloque o Client ID em `GOOGLE_CLIENT_ID`
-   no Render.
+   O certificado HTTPS sai sozinho depois que o DNS propaga (minutos a horas).
+5. **Manter acordado**: em https://cron-job.org, agende um acesso a
+   `https://estrategiaf1.com.br/health` a cada 10 minutos. Sem isso, o plano
+   grátis dorme e os lembretes de prazo atrasam. Nenhuma corrida se perde.
+6. **Login com Google (opcional)**: no Google Cloud, crie um *OAuth Client ID*
+   (*Web application*) com `https://estrategiaf1.com.br` em
+   *Authorized JavaScript origins* e coloque o ID em `GOOGLE_CLIENT_ID`.
 
 As chaves das notificações (VAPID) são geradas e guardadas no banco
-automaticamente. O servidor cria a tabela sozinho (`gp8_kv`). Sem `DATABASE_URL`, ele grava em
-arquivos na pasta `DATA_DIR` (padrão `./data`), o que serve para rodar num
-computador ou VPS com disco. No plano gratuito do Render o serviço dorme sem
-acesso e demora uns 50 s para acordar, mas nenhuma sessão se perde.
+automaticamente. O servidor cria a tabela sozinho (`gp8_kv`). Sem
+`DATABASE_URL`, ele grava em arquivos na pasta `DATA_DIR`.
 
 ## Arquitetura
 

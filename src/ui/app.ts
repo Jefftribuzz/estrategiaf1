@@ -1332,6 +1332,13 @@ export function mount(el: HTMLElement) {
     history.replaceState(null, '', location.pathname);
     openLeague(open);
   }
+  if (params.get('tela') === 'online' && !profile) {
+    // Atalho da landing page: "Jogar com amigos".
+    history.replaceState(null, '', location.pathname);
+    ui.screen = 'online';
+    loadConfig();
+    loadMe();
+  }
   const code = pendingInvite();
   if (code) {
     ui.screen = 'online';

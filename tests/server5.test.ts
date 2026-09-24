@@ -30,8 +30,10 @@ const sub = (n: string): PushSubscriptionJSON => ({ endpoint: `https://push.exam
 
 beforeAll(async () => {
   dir = await mkdtemp(join(tmpdir(), 'gp8-5-'));
-  await mkdir(join(dir, 'static'));
-  await writeFile(join(dir, 'static', 'index.html'), '<!doctype html><title>x</title>');
+  await mkdir(join(dir, 'static', 'jogar'), { recursive: true });
+  await writeFile(join(dir, 'static', 'index.html'), '<!doctype html><title>landing</title>');
+  await writeFile(join(dir, 'static', '404.html'), '<!doctype html><title>404</title>');
+  await writeFile(join(dir, 'static', 'jogar', 'index.html'), '<!doctype html><title>jogo</title>');
   app = createApp({
     store: new FileStore(join(dir, 'data')),
     now: () => clock,
@@ -75,6 +77,26 @@ describe('Fase 5: segurança', () => {
     expect(blocked.status).toBe(429);
     expect(blocked.headers.get('retry-after')).toBe('60');
     expect((await call('/api/register', undefined, { name: 'Outro IP' }, '8.8.8.8')).status).toBe(200);
+  });
+});
+
+describe('domínio: landing na raiz e jogo em /jogar/', () => {
+  test('rotas, redirecionamentos e 404', async () => {
+    const get = (p: string) => fetch(base + p, { redirect: 'manual' });
+    expect(await (await get('/')).text()).toContain('landing');
+    expect(await (await get('/jogar/')).text()).toContain('jogo');
+    const r1 = await get('/jogar');
+    expect(r1.status).toBe(301);
+    expect(r1.headers.get('location')).toBe('/jogar/');
+    const r2 = await get('/?liga=ABC123');
+    expect(r2.status).toBe(302);
+    expect(r2.headers.get('location')).toBe('/jogar/?liga=ABC123');
+    // Rota desconhecida dentro do jogo abre o jogo; fora dele, 404 da landing.
+    expect(await (await get('/jogar/qualquer')).text()).toContain('jogo');
+    const miss = await get('/nao-existe');
+    expect(miss.status).toBe(404);
+    expect(await miss.text()).toContain('404');
+    expect((await get('/%E0%A4%A')).status).toBe(400);
   });
 });
 
