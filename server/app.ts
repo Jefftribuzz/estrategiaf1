@@ -88,6 +88,10 @@ const MIME: Record<string, string> = {
   '.json': 'application/json',
   '.svg': 'image/svg+xml',
   '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.webp': 'image/webp',
+  '.txt': 'text/plain; charset=utf-8',
+  '.xml': 'application/xml',
   '.ico': 'image/x-icon',
   '.webmanifest': 'application/manifest+json',
 };
@@ -249,7 +253,7 @@ export function createApp(opts: AppOptions) {
   /** O que mudou na liga e merece notificação. */
   function diffNotes(before: LeagueState, after: LeagueState): Note[] {
     const users = Object.values(after.humans).map((h) => h.userId);
-    const url = `./?abrir=${after.id}`;
+    const url = `/jogar/?abrir=${after.id}`;
     const tag = `liga-${after.id}`;
     const deadline = nextDeadline(after);
     const session = currentSession(after);
@@ -337,7 +341,7 @@ export function createApp(opts: AppOptions) {
       payload: {
         title: `⏰ ${l.name}: falta 1 hora!`,
         body: `Envie sua decisão para ${SESSION_LABEL[session]} do GP de ${getTrack(l.calendar[l.round]).name} até ${fmtIn(deadline, l.timezone)}. Senão, o engenheiro decide.`,
-        url: `./?abrir=${l.id}`,
+        url: `/jogar/?abrir=${l.id}`,
         tag: `liga-${l.id}`,
       },
     }];
@@ -554,19 +558,51 @@ export function createApp(opts: AppOptions) {
     throw new HttpError(404, 'Rota não encontrada.');
   }
 
-  async function serveStatic(req: IncomingMessage, res: ServerResponse, path: string) {
+  /** Caminho do jogo dentro do domínio (a raiz é a landing page). */
+  const GAME = '/jogar/';
+
+  function redirect(res: ServerResponse, location: string, status = 301) {
+    res.writeHead(status, { ...SECURITY_HEADERS, location, 'cache-control': 'no-cache' });
+    res.end();
+  }
+
+  async function serveStatic(req: IncomingMessage, res: ServerResponse, url: URL) {
     if (!opts.staticDir) throw new HttpError(404, 'Não encontrado.');
+    const path = url.pathname;
+    // O jogo usa caminhos relativos: /jogar precisa da barra no fim.
+    if (path === GAME.slice(0, -1)) return redirect(res, GAME + url.search);
+    // Links de convite, perfil e notificação feitos na raiz vão para o jogo.
+    if (path === '/' && /[?&](liga|perfil|abrir|tela)=/.test(url.search)) return redirect(res, GAME + url.search, 302);
+
     const root = resolve(opts.staticDir);
-    let file = resolve(join(root, decodeURIComponent(path)));
+    let rel: string;
+    try {
+      rel = decodeURIComponent(path);
+    } catch {
+      throw new HttpError(400, 'Endereço inválido.');
+    }
+    let file = resolve(join(root, rel));
     if (file !== root && !file.startsWith(root + sep)) throw new HttpError(404, 'Não encontrado.');
+    let status = 200;
     try {
       if ((await stat(file)).isDirectory()) file = join(file, 'index.html');
+      await stat(file);
     } catch {
-      file = join(root, 'index.html');
+      // Página que não existe: dentro do jogo, abre o jogo; fora, a página 404 da landing.
+      if (path.startsWith(GAME)) file = join(root, 'jogar', 'index.html');
+      else {
+        status = 404;
+        file = join(root, '404.html');
+      }
     }
-    const data = await readFile(file);
+    let data: Buffer;
+    try {
+      data = await readFile(file);
+    } catch {
+      throw new HttpError(404, 'Não encontrado.');
+    }
     const https = opts.trustProxy && req.headers['x-forwarded-proto'] === 'https';
-    res.writeHead(200, {
+    res.writeHead(status, {
       ...SECURITY_HEADERS,
       ...(https ? { 'strict-transport-security': 'max-age=31536000' } : {}),
       'content-type': MIME[extname(file)] ?? 'application/octet-stream',
@@ -581,7 +617,7 @@ export function createApp(opts: AppOptions) {
       if (url.pathname === '/health') return send(res, 200, { ok: true });
       if (url.pathname.startsWith('/api/')) return await api(req, res, url.pathname);
       if (req.method !== 'GET' && req.method !== 'HEAD') throw new HttpError(405, 'Método não suportado.');
-      return await serveStatic(req, res, url.pathname);
+      return await serveStatic(req, res, url);
     } catch (e) {
       if (e instanceof HttpError) return send(res, e.status, { error: e.message }, e.status === 429 ? { 'retry-after': '60' } : {});
       console.error(e);
