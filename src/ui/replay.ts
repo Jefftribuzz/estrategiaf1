@@ -56,6 +56,8 @@ export class Replay {
   private last = 0;
   private lastDom = 0;
   private shownEvents = 0;
+  /** Quantos eventos já estão escritos na narração (-1 = reescrever). */
+  private feedCount = -1;
   private finished = false;
   private lightsClock = 0;
   private lightsShown = 0;
@@ -100,6 +102,22 @@ export class Replay {
     const rng = createRng(state.seed).fork('drops');
     const n = weather.rain === 2 ? 160 : weather.rain === 1 ? 70 : 0;
     for (let i = 0; i < n; i++) this.drops.push({ x: rng.range(0, W), y: rng.range(0, H), len: rng.range(3, 7) });
+  }
+
+  /**
+   * Reconecta o replay a elementos novos, quando a tela é redesenhada no meio
+   * da corrida (a corrida continua de onde estava).
+   */
+  attach(canvas: HTMLCanvasElement, tower: HTMLElement, feed: HTMLElement, hud: HTMLElement) {
+    canvas.width = W;
+    canvas.height = H;
+    this.ctx = canvas.getContext('2d')!;
+    this.ctx.imageSmoothingEnabled = false;
+    this.tower = tower;
+    this.feed = feed;
+    this.hud = hud;
+    this.feedCount = -1;
+    this.lastDom = 0;
   }
 
   start() {
@@ -508,6 +526,9 @@ export class Replay {
         this.shownEvents = visible.length;
         // Ao pular para o fim, não dispara dezenas de sons de uma vez.
         if (fresh.length <= 6) for (const e of fresh) this.spawn(e, e.teamId ? (pos.get(e.teamId) ?? null) : null);
+      }
+      if (visible.length !== this.feedCount) {
+        this.feedCount = visible.length;
         this.feed.innerHTML = [...visible]
           .reverse()
           .map((e) => `<div class="ev ev-${e.type}"><span class="yellow">${e.lap ? `V${e.lap}` : 'LARG'}</span> ${esc(e.text)}</div>`)

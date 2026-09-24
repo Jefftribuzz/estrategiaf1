@@ -286,8 +286,25 @@ function skillRows(team: (typeof TEAMS)[number]): string {
   return rows.map(([l, v]) => `<div class="stat"><span>${l} ${v}</span>${bar((v - 80) / 20)}</div>`).join('');
 }
 
+/** Barra fixa no topo: título, o que foi escolhido e os botões Voltar/Próximo sempre à mão. */
+function stepBar(title: string, selection: string, backArg: string, nextAct: string, nextArg: string, nextLabel: string, extra = ''): string {
+  return `<div class="stepbar">
+    <div class="stepbar-row">
+      <button class="btn secondary small" data-act="goto" data-arg="${backArg}">◀ Voltar</button>
+      <div class="stepbar-info"><div class="yellow">${esc(title)}</div><div class="muted">${selection}</div></div>
+      <button class="btn" data-act="${nextAct}" data-arg="${nextArg}">${esc(nextLabel)} ▶</button>
+    </div>${extra}</div>`;
+}
+
+function difficultyPicker(): string {
+  return `<div class="stepbar-extra"><span class="muted">Dificuldade da IA:</span>${DIFFICULTIES.map(
+    (d) => `<button class="tab${d.id === ui.difficulty ? ' active' : ''}" data-act="difficulty" data-arg="${d.id}">${d.label}</button>`,
+  ).join('')}</div>`;
+}
+
 function teamView(): string {
-  return `<h1>Escolha sua equipe</h1>
+  const sel = getTeam(ui.teamId);
+  return `${stepBar('Escolha sua equipe', `${esc(sel.driver.name)} · ${esc(sel.car)}`, 'title', 'goto', ui.mode === 'season' ? 'season-setup' : 'track', 'Próximo')}
     <div class="grid cards">${TEAMS.map(
       (t) => `<button class="card${t.id === ui.teamId ? ' selected' : ''}" data-act="team" data-arg="${t.id}">
         <img class="px car" src="${carSprite(t)}" alt="${esc(t.car)}">
@@ -296,13 +313,12 @@ function teamView(): string {
         <div class="muted" style="margin-bottom:6px">★ ${esc(t.strength)}</div>
         ${skillRows(t)}
       </button>`,
-    ).join('')}</div>
-    <div class="row" style="margin-top:16px"><button class="btn secondary" data-act="goto" data-arg="title">Voltar</button>
-    <button class="btn big" data-act="goto" data-arg="${ui.mode === 'season' ? 'season-setup' : 'track'}">Próximo ▶</button></div>`;
+    ).join('')}</div>`;
 }
 
 function trackView(): string {
-  return `<h1>Escolha o Grande Prêmio</h1>
+  const sel = getTrack(ui.trackId);
+  return `${stepBar('Escolha o Grande Prêmio', `GP de ${esc(sel.name)}`, 'team', 'start', '', 'Largar', difficultyPicker())}
     <div class="grid cards">${TRACKS.map(
       (t) => `<button class="card${t.id === ui.trackId ? ' selected' : ''}" data-act="track" data-arg="${t.id}">
         <div class="yellow">${esc(t.name)}</div><div class="muted">${esc(t.country)} · ${t.laps} voltas</div>
@@ -316,12 +332,7 @@ function trackView(): string {
         </div>
         <div class="muted" style="margin-top:6px;font-size:8px">${esc(t.demand)}</div>
       </button>`,
-    ).join('')}</div>
-    <div class="panel tight" style="margin-top:16px"><h3>Dificuldade da IA</h3><div class="tabs">${DIFFICULTIES.map(
-      (d) => `<button class="tab${d.id === ui.difficulty ? ' active' : ''}" data-act="difficulty" data-arg="${d.id}">${d.label}</button>`,
-    ).join('')}</div></div>
-    <div class="row"><button class="btn secondary" data-act="goto" data-arg="team">Voltar</button>
-    <button class="btn big" data-act="start">Começar fim de semana ▶</button></div>`;
+    ).join('')}</div>`;
 }
 
 function fmtDate(iso: string): string {
@@ -842,7 +853,7 @@ function afterSkip(before: number) {
 
 function seasonSetupView(): string {
   const team = getTeam(ui.teamId);
-  return `<h1>Nova temporada</h1>
+  return `${stepBar('Nova temporada', `${esc(team.driver.name)} · ${esc(team.car)}`, 'team', 'start-season', '', 'Começar', difficultyPicker())}
     <div class="panel row">
       <img class="px" src="${carSprite(team)}" width="160" height="56" alt="${esc(team.car)}">
       <div><div class="yellow">${esc(team.driver.name)}</div><div class="muted">${esc(team.car)} (${team.year})</div></div>
@@ -850,11 +861,7 @@ function seasonSetupView(): string {
     <div class="panel"><h2>Calendário</h2><div class="row">${SEASON_CALENDAR.map((id, i) => `<span class="pill">${i + 1}. ${esc(getTrack(id).name)}</span>`).join('')}</div>
       <p style="margin-top:10px">10 GPs, um a cada 3 dias. Você começa com <span class="green">$150M</span>, recebe $12M de patrocínio por GP e prêmios pela posição de chegada.</p>
       <p class="muted" style="font-size:8px">Peças compradas ficam na garagem. Motores se desgastam, acidentes destroem a asa, e o dinheiro também serve para desenvolver o carro.</p></div>
-    <div class="panel tight"><h3>Dificuldade da IA</h3><div class="tabs">${DIFFICULTIES.map(
-      (d) => `<button class="tab${d.id === ui.difficulty ? ' active' : ''}" data-act="difficulty" data-arg="${d.id}">${d.label}</button>`,
-    ).join('')}</div></div>
-    <div class="row"><button class="btn secondary" data-act="goto" data-arg="team">Voltar</button>
-    <button class="btn big" data-act="start-season">Começar temporada ▶</button></div>`;
+`;
 }
 
 // ------------------------------------------------------------- render ------
@@ -884,7 +891,15 @@ function render() {
   else chip.stopTheme();
   root.querySelectorAll<HTMLCanvasElement>('canvas[data-track]').forEach((c) => drawTrack(c, getTrack(c.dataset.track!)));
   if (ui.screen === 'online') mountGoogle();
-  if (ui.screen === 'replay' && !replay) {
+  if (ui.screen === 'replay' && replay) {
+    // Redesenho no meio da corrida (ex.: aviso na tela): o replay continua.
+    replay.attach(
+      root.querySelector('#replay-canvas')!,
+      root.querySelector('#tower')!,
+      root.querySelector('#feed')!,
+      root.querySelector('#hud')!,
+    );
+  } else if (ui.screen === 'replay') {
     replay = new Replay(
       root.querySelector('#replay-canvas')!,
       root.querySelector('#tower')!,
@@ -1267,16 +1282,19 @@ function handle(act: string, arg: string, el: HTMLElement) {
       });
       return;
     case 'sound':
+      // Só troca o botão: redesenhar a tela interromperia o replay e a música.
       chip.setMuted(!chip.muted);
-      break;
+      el.textContent = chip.muted ? '🔇 SOM' : '🔊 SOM';
+      return;
     case 'crt': {
       const on = document.body.classList.toggle('crt');
+      el.classList.toggle('active', on);
       try {
         localStorage.setItem(CRT_KEY, on ? '1' : '0');
       } catch {
         /* sem armazenamento */
       }
-      break;
+      return;
     }
     case 'speed':
       replay?.setSpeed(Number(arg));
