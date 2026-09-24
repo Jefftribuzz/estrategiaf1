@@ -54,7 +54,11 @@
           <a class="btn secondary" href="/jogar/?tela=online">Liga com amigos</a>
           <p class="tags">Grátis · Sem download · Computador e celular · Liga online</p>
         </div>
-        <img class="frame" src="/img/replay.png" alt="Corrida de Fórmula 1 em 8 bits: replay do GP noturno de Baku com a torre de posições" width="1068" height="819" fetchpriority="high" />
+        <figure class="showreel">
+          <canvas id="showreel" class="frame px" width="320" height="200" role="img" aria-label="Animação do jogo: carros de Fórmula 1 em 8 bits correndo nos 10 circuitos, com chuva, corrida noturna, vento e o pódio"></canvas>
+          <noscript><img class="frame" src="/img/replay.png" alt="Corrida de Fórmula 1 em 8 bits: replay do GP noturno de Baku com a torre de posições" width="1068" height="819" /></noscript>
+          <figcaption class="showreel-bar"><span id="showreel-dots" class="reel-dots"></span><button id="showreel-toggle" class="btn small secondary" type="button">❚❚ Pausar</button></figcaption>
+        </figure>
       </div>
       <div class="parade" aria-hidden="true"><div class="lane"><img class="px" src="/img/car-maserati-250f.png" alt="" width="120" height="42"><img class="px" src="/img/car-lotus-49.png" alt="" width="120" height="42"><img class="px" src="/img/car-lotus-72d.png" alt="" width="120" height="42"><img class="px" src="/img/car-ferrari-312t.png" alt="" width="120" height="42"><img class="px" src="/img/car-brabham-bt49.png" alt="" width="120" height="42"><img class="px" src="/img/car-mclaren-mp4-4.png" alt="" width="120" height="42"><img class="px" src="/img/car-williams-fw14b.png" alt="" width="120" height="42"><img class="px" src="/img/car-ferrari-f2004.png" alt="" width="120" height="42"><img class="px" src="/img/car-redbull-rb9.png" alt="" width="120" height="42"><img class="px" src="/img/car-mercedes-w11.png" alt="" width="120" height="42"><img class="px" src="/img/car-maserati-250f.png" alt="" width="120" height="42"><img class="px" src="/img/car-lotus-49.png" alt="" width="120" height="42"><img class="px" src="/img/car-lotus-72d.png" alt="" width="120" height="42"><img class="px" src="/img/car-ferrari-312t.png" alt="" width="120" height="42"><img class="px" src="/img/car-brabham-bt49.png" alt="" width="120" height="42"><img class="px" src="/img/car-mclaren-mp4-4.png" alt="" width="120" height="42"><img class="px" src="/img/car-williams-fw14b.png" alt="" width="120" height="42"><img class="px" src="/img/car-ferrari-f2004.png" alt="" width="120" height="42"><img class="px" src="/img/car-redbull-rb9.png" alt="" width="120" height="42"><img class="px" src="/img/car-mercedes-w11.png" alt="" width="120" height="42"></div></div>
     </div>
@@ -91,37 +95,42 @@
       <div class="wrap">
         <h2>10 lendas da F1 com seus carros históricos</h2>
         <p class="sub">Cada piloto tem seu ponto forte. Todos equilibrados: quem decide é a sua estratégia. <a href="/pilotos/">Conheça as lendas</a>.</p>
-        <div class="grid g5">
-        <a class="card legend link-card" href="/pilotos/juan-manuel-fangio/"><img class="px car" src="/img/car-maserati-250f.png" alt="Maserati 250F em pixel art" width="120" height="42" loading="lazy" decoding="async">
+        <div class="carousel" data-carousel role="region" aria-roledescription="carrossel" aria-label="As 10 lendas da Fórmula 1 no jogo">
+          <button class="carousel-btn prev" type="button" data-carousel-prev aria-label="Lenda anterior">◀</button>
+          <div class="carousel-track">
+            <a class="card legend link-card slide" data-name="Juan Manuel Fangio" href="/pilotos/juan-manuel-fangio/"><img class="px car" src="/img/car-maserati-250f.png" alt="Maserati 250F em pixel art" width="240" height="84" loading="lazy" decoding="async">
           <div class="who"><img class="px helmet" width="24" height="24" loading="lazy" alt="" src="/img/helmet-maserati-250f.png">Juan Manuel Fangio</div>
-          <div class="what">Maserati 250F · 1957</div><div class="what">★ Consistência</div></a>
-        <a class="card legend link-card" href="/pilotos/jim-clark/"><img class="px car" src="/img/car-lotus-49.png" alt="Lotus 49 em pixel art" width="120" height="42" loading="lazy" decoding="async">
+          <div class="what">Maserati 250F · 1957</div><div class="what">★ Consistência</div><span class="more">Ver a história ▶</span></a>
+            <a class="card legend link-card slide" data-name="Jim Clark" href="/pilotos/jim-clark/"><img class="px car" src="/img/car-lotus-49.png" alt="Lotus 49 em pixel art" width="240" height="84" loading="lazy" decoding="async">
           <div class="who"><img class="px helmet" width="24" height="24" loading="lazy" alt="" src="/img/helmet-lotus-49.png">Jim Clark</div>
-          <div class="what">Lotus 49 · 1967</div><div class="what">★ Motor Cosworth</div></a>
-        <a class="card legend link-card" href="/pilotos/emerson-fittipaldi/"><img class="px car" src="/img/car-lotus-72d.png" alt="Lotus 72D em pixel art" width="120" height="42" loading="lazy" decoding="async">
+          <div class="what">Lotus 49 · 1967</div><div class="what">★ Motor Cosworth</div><span class="more">Ver a história ▶</span></a>
+            <a class="card legend link-card slide" data-name="Emerson Fittipaldi" href="/pilotos/emerson-fittipaldi/"><img class="px car" src="/img/car-lotus-72d.png" alt="Lotus 72D em pixel art" width="240" height="84" loading="lazy" decoding="async">
           <div class="who"><img class="px helmet" width="24" height="24" loading="lazy" alt="" src="/img/helmet-lotus-72d.png">Emerson Fittipaldi</div>
-          <div class="what">Lotus 72D · 1972</div><div class="what">★ Equilíbrio</div></a>
-        <a class="card legend link-card" href="/pilotos/niki-lauda/"><img class="px car" src="/img/car-ferrari-312t.png" alt="Ferrari 312T em pixel art" width="120" height="42" loading="lazy" decoding="async">
+          <div class="what">Lotus 72D · 1972</div><div class="what">★ Equilíbrio</div><span class="more">Ver a história ▶</span></a>
+            <a class="card legend link-card slide" data-name="Niki Lauda" href="/pilotos/niki-lauda/"><img class="px car" src="/img/car-ferrari-312t.png" alt="Ferrari 312T em pixel art" width="240" height="84" loading="lazy" decoding="async">
           <div class="who"><img class="px helmet" width="24" height="24" loading="lazy" alt="" src="/img/helmet-ferrari-312t.png">Niki Lauda</div>
-          <div class="what">Ferrari 312T · 1975</div><div class="what">★ Confiabilidade</div></a>
-        <a class="card legend link-card" href="/pilotos/nelson-piquet/"><img class="px car" src="/img/car-brabham-bt49.png" alt="Brabham BT49 em pixel art" width="120" height="42" loading="lazy" decoding="async">
+          <div class="what">Ferrari 312T · 1975</div><div class="what">★ Confiabilidade</div><span class="more">Ver a história ▶</span></a>
+            <a class="card legend link-card slide" data-name="Nelson Piquet" href="/pilotos/nelson-piquet/"><img class="px car" src="/img/car-brabham-bt49.png" alt="Brabham BT49 em pixel art" width="240" height="84" loading="lazy" decoding="async">
           <div class="who"><img class="px helmet" width="24" height="24" loading="lazy" alt="" src="/img/helmet-brabham-bt49.png">Nelson Piquet</div>
-          <div class="what">Brabham BT49 · 1981</div><div class="what">★ Economia de pneus</div></a>
-        <a class="card legend link-card" href="/pilotos/ayrton-senna/"><img class="px car" src="/img/car-mclaren-mp4-4.png" alt="McLaren MP4/4 em pixel art" width="120" height="42" loading="lazy" decoding="async">
+          <div class="what">Brabham BT49 · 1981</div><div class="what">★ Economia de pneus</div><span class="more">Ver a história ▶</span></a>
+            <a class="card legend link-card slide" data-name="Ayrton Senna" href="/pilotos/ayrton-senna/"><img class="px car" src="/img/car-mclaren-mp4-4.png" alt="McLaren MP4/4 em pixel art" width="240" height="84" loading="lazy" decoding="async">
           <div class="who"><img class="px helmet" width="24" height="24" loading="lazy" alt="" src="/img/helmet-mclaren-mp4-4.png">Ayrton Senna</div>
-          <div class="what">McLaren MP4/4 · 1988</div><div class="what">★ Chuva e classificação</div></a>
-        <a class="card legend link-card" href="/pilotos/nigel-mansell/"><img class="px car" src="/img/car-williams-fw14b.png" alt="Williams FW14B em pixel art" width="120" height="42" loading="lazy" decoding="async">
+          <div class="what">McLaren MP4/4 · 1988</div><div class="what">★ Chuva e classificação</div><span class="more">Ver a história ▶</span></a>
+            <a class="card legend link-card slide" data-name="Nigel Mansell" href="/pilotos/nigel-mansell/"><img class="px car" src="/img/car-williams-fw14b.png" alt="Williams FW14B em pixel art" width="240" height="84" loading="lazy" decoding="async">
           <div class="who"><img class="px helmet" width="24" height="24" loading="lazy" alt="" src="/img/helmet-williams-fw14b.png">Nigel Mansell</div>
-          <div class="what">Williams FW14B · 1992</div><div class="what">★ Curvas rápidas</div></a>
-        <a class="card legend link-card" href="/pilotos/michael-schumacher/"><img class="px car" src="/img/car-ferrari-f2004.png" alt="Ferrari F2004 em pixel art" width="120" height="42" loading="lazy" decoding="async">
+          <div class="what">Williams FW14B · 1992</div><div class="what">★ Curvas rápidas</div><span class="more">Ver a história ▶</span></a>
+            <a class="card legend link-card slide" data-name="Michael Schumacher" href="/pilotos/michael-schumacher/"><img class="px car" src="/img/car-ferrari-f2004.png" alt="Ferrari F2004 em pixel art" width="240" height="84" loading="lazy" decoding="async">
           <div class="who"><img class="px helmet" width="24" height="24" loading="lazy" alt="" src="/img/helmet-ferrari-f2004.png">Michael Schumacher</div>
-          <div class="what">Ferrari F2004 · 2004</div><div class="what">★ Ritmo de corrida</div></a>
-        <a class="card legend link-card" href="/pilotos/sebastian-vettel/"><img class="px car" src="/img/car-redbull-rb9.png" alt="Red Bull RB9 em pixel art" width="120" height="42" loading="lazy" decoding="async">
+          <div class="what">Ferrari F2004 · 2004</div><div class="what">★ Ritmo de corrida</div><span class="more">Ver a história ▶</span></a>
+            <a class="card legend link-card slide" data-name="Sebastian Vettel" href="/pilotos/sebastian-vettel/"><img class="px car" src="/img/car-redbull-rb9.png" alt="Red Bull RB9 em pixel art" width="240" height="84" loading="lazy" decoding="async">
           <div class="who"><img class="px helmet" width="24" height="24" loading="lazy" alt="" src="/img/helmet-redbull-rb9.png">Sebastian Vettel</div>
-          <div class="what">Red Bull RB9 · 2013</div><div class="what">★ Difusor soprado</div></a>
-        <a class="card legend link-card" href="/pilotos/lewis-hamilton/"><img class="px car" src="/img/car-mercedes-w11.png" alt="Mercedes W11 em pixel art" width="120" height="42" loading="lazy" decoding="async">
+          <div class="what">Red Bull RB9 · 2013</div><div class="what">★ Difusor soprado</div><span class="more">Ver a história ▶</span></a>
+            <a class="card legend link-card slide" data-name="Lewis Hamilton" href="/pilotos/lewis-hamilton/"><img class="px car" src="/img/car-mercedes-w11.png" alt="Mercedes W11 em pixel art" width="240" height="84" loading="lazy" decoding="async">
           <div class="who"><img class="px helmet" width="24" height="24" loading="lazy" alt="" src="/img/helmet-mercedes-w11.png">Lewis Hamilton</div>
-          <div class="what">Mercedes W11 · 2020</div><div class="what">★ Velocidade de reta</div></a>
+          <div class="what">Mercedes W11 · 2020</div><div class="what">★ Velocidade de reta</div><span class="more">Ver a história ▶</span></a>
+          </div>
+          <button class="carousel-btn next" type="button" data-carousel-next aria-label="Próxima lenda">▶</button>
+          <div class="carousel-dots"></div>
         </div>
       </div>
     </section>
@@ -189,5 +198,6 @@
       <p>Traçados dos circuitos a partir de <a href="https://github.com/bacinger/f1-circuits">bacinger/f1-circuits</a> (licença MIT).</p>
     </div>
   </footer>
+  <script type="module" src="/landing.js"></script>
 </body>
 </html>

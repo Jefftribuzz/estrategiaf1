@@ -12,7 +12,7 @@
     "preview": "vite preview",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
-    "build:site": "esbuild scripts/seo/gen-pages.ts --bundle --platform=node --format=esm --packages=external --outfile=node_modules/.cache/gen-pages.mjs --log-level=warning && node node_modules/.cache/gen-pages.mjs"
+    "build:site": "esbuild scripts/seo/gen-pages.ts --bundle --platform=node --format=esm --packages=external --outfile=node_modules/.cache/gen-pages.mjs --log-level=warning && node node_modules/.cache/gen-pages.mjs && esbuild src/landing/main.ts --bundle --format=esm --minify --target=es2020 --outfile=dist/landing.js --log-level=warning"
   },
   "devDependencies": {
     "@types/node": "^26.6.2",
