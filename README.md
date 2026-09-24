@@ -160,6 +160,39 @@ As chaves das notificações (VAPID) são geradas e guardadas no banco
 automaticamente. O servidor cria a tabela sozinho (`gp8_kv`). Sem
 `DATABASE_URL`, ele grava em arquivos na pasta `DATA_DIR`.
 
+## SEO (busca no Google)
+
+O build gera, além da landing, páginas de conteúdo feitas para busca:
+
+- `/como-jogar/`: guia completo, com as tabelas de peças e perguntas frequentes;
+- `/pistas/` e `/pistas/<circuito>/`: guia de estratégia de cada GP (traçado,
+  ficha, história, dicas, horários);
+- `/pilotos/` e `/pilotos/<piloto>/`: cada lenda, com história, carro e atributos;
+- `sitemap.xml` com todas as páginas, `robots.txt` e 404 com `noindex`.
+
+Os textos ficam em `scripts/seo/content.ts` e o gerador em
+`scripts/seo/gen-pages.ts`; os números vêm dos dados do jogo. Todas as páginas
+têm título e descrição próprios, endereço canônico, Open Graph e dados
+estruturados (VideoGame, FAQPage, Article, BreadcrumbList).
+
+**Depois de publicar no domínio:**
+
+1. **Google Search Console** (https://search.google.com/search-console):
+   adicione uma propriedade do tipo **Domínio** (`estrategiaf1.com.br`). Ele
+   pede um registro **TXT**; crie-o no DNS do Registro.br e clique em
+   *Verificar*.
+2. Em *Sitemaps*, envie `https://estrategiaf1.com.br/sitemap.xml`.
+3. Em *Inspeção de URL*, peça a indexação da página inicial, de `/pistas/` e de
+   `/pilotos/`.
+4. **Bing Webmaster Tools** (https://www.bing.com/webmasters): importe o site
+   direto do Search Console. O Bing também alimenta o DuckDuckGo e o
+   buscador do ChatGPT.
+5. **Links para o site**: divulgue em comunidades de F1 e de jogos (grupos,
+   Reddit r/formula1 e r/brdev, fóruns, Discord), cadastre em diretórios de
+   jogos de navegador (itch.io, Game Jolt) e peça para quem joga compartilhar
+   o link da liga. Links de outros sites são o fator que mais pesa depois do
+   conteúdo.
+
 ## Arquitetura
 
 ```
@@ -174,6 +207,7 @@ src/engine/   Motor puro em TypeScript, sem DOM e determinístico (semente).
   weekend.ts      orquestração do fim de semana
   season.ts       temporada, economia, garagem e desenvolvimento
   league.ts       liga multiplayer (lobby, prazos, decisões, visão por jogador)
+scripts/seo/  gerador do site estático (landing + páginas de SEO + sitemap)
 server/       API HTTP (Node, sem framework) + armazenamento em arquivo ou Postgres
 src/ui/       Interface (telas, sprites, replay, áudio chiptune, cliente online)
 tests/        Vitest
