@@ -2,14 +2,15 @@ import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypt
 import { readFile, stat } from 'node:fs/promises';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { extname, join, resolve, sep } from 'node:path';
-import { getTeam } from '../src/engine/data/teams';
-import { getTrack } from '../src/engine/data/tracks';
+import { getTeam, TEAMS } from '../src/engine/data/teams';
+import { getTrack, TRACKS } from '../src/engine/data/tracks';
 import {
   advance,
   createLeague,
   currentSession,
   currentSessionIndex,
   forceSession,
+  teamOf,
   joinLeague,
   leagueBuy,
   leaveLeague,
@@ -24,6 +25,18 @@ import {
 import { standings, type SeasonState } from '../src/engine/season';
 import type { Difficulty, SessionId } from '../src/engine/types';
 import { SESSION_LABEL } from '../src/engine/weekend';
+import {
+  cleanText,
+  DEFAULT_PREFS,
+  hashPassword,
+  normalizeEmail,
+  validateAvatar,
+  validatePassword,
+  validatePrefs,
+  verifyPassword,
+  type Avatar,
+  type Prefs,
+} from './auth';
 import type { GoogleVerifier } from './google';
 import { isSubscription, loadVapid, webPushSender, type PushPayload, type PushSender, type PushSubscriptionJSON, type Vapid } from './push';
 import { RateLimiter } from './ratelimit';
@@ -43,6 +56,27 @@ interface User {
   createdAt: string;
   googleSub?: string;
   push?: PushSubscriptionJSON[];
+  email?: string;
+  passwordHash?: string;
+  firstName?: string;
+  lastName?: string;
+  avatar?: Avatar;
+  prefs?: Prefs;
+}
+
+/** Corrida ou temporada solo guardada no histórico do perfil. */
+export interface SoloEntry {
+  mode: 'rapida' | 'temporada';
+  date: string;
+  teamId: string;
+  difficulty: string;
+  trackId?: string;
+  position?: number;
+  points?: number;
+  /** Temporada: posição final no campeonato. */
+  championship?: number;
+  wins?: number;
+  podiums?: number;
 }
 
 export interface RankingEntry {
@@ -163,7 +197,9 @@ function fmtIn(date: Date, tz: string): string {
   return date.toLocaleString('pt-BR', { timeZone: tz, weekday: 'short', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
 }
 
-type Note = { userIds: string[]; payload: PushPayload };
+/** Tipo do aviso: o jogador escolhe no perfil quais quer receber. */
+type NoteKind = 'session' | 'reminder' | 'results' | 'system';
+type Note = { userIds: string[]; payload: PushPayload; kind: NoteKind };
 
 export function createApp(opts: AppOptions) {
   const { store } = opts;
@@ -185,6 +221,12 @@ export function createApp(opts: AppOptions) {
 
   function limit(key: string, max: number, windowMs: number) {
     if (!limiter.take(key, max, windowMs)) throw new HttpError(429, 'Muitas requisições. Espere um pouco e tente de novo.');
+  }
+
+  /** Hash do token usado nesta requisição (para sair só deste aparelho). */
+  function requestTokenHash(req: IncomingMessage): string | null {
+    const m = /^Bearer [\w-]+\.([\w-]+)$/.exec(req.headers.authorization ?? '');
+    return m ? sha256(m[1]) : null;
   }
 
   async function auth(req: IncomingMessage): Promise<User> {
@@ -236,6 +278,7 @@ export function createApp(opts: AppOptions) {
     for (const n of notes) {
       for (const userId of n.userIds) {
         const u = await store.get<User>(`user:${userId}`);
+        if (n.kind !== 'system' && u?.prefs && !u.prefs.notify[n.kind]) continue;
         const dead: string[] = [];
         for (const sub of u?.push ?? []) {
           try {
@@ -259,7 +302,7 @@ export function createApp(opts: AppOptions) {
     const session = currentSession(after);
     const openMsg = session && deadline ? `${SESSION_LABEL[session]} do GP de ${getTrack(after.calendar[after.round]).name} aberta. Prazo: ${fmtIn(deadline, after.timezone)}.` : '';
     if (before.status === 'lobby' && after.status === 'running') {
-      return [{ userIds: users, payload: { title: `🏁 ${after.name}: a temporada começou!`, body: openMsg, url, tag } }];
+      return [{ kind: 'session', userIds: users, payload: { title: `🏁 ${after.name}: a temporada começou!`, body: openMsg, url, tag } }];
     }
     if (after.results.length > before.results.length) {
       const r = after.results[after.results.length - 1];
@@ -274,13 +317,14 @@ export function createApp(opts: AppOptions) {
             ? `${winner} venceu a última prova. Campeão: ${getTeam(table[0].teamId).driver.name}. Você terminou em P${champ.position}.`
             : `${winner} venceu. Você ${pos}. ${openMsg}`;
         return {
+          kind: 'results' as const,
           userIds: [h.userId],
           payload: { title: after.status === 'finished' ? `🏆 ${after.name}: fim de temporada!` : `🏁 Resultado: GP de ${getTrack(r.trackId).name}`, body, url, tag },
         };
       });
     }
     if (currentSessionIndex(after) > currentSessionIndex(before) && openMsg) {
-      return [{ userIds: users, payload: { title: `⏱ ${after.name}`, body: openMsg, url, tag } }];
+      return [{ kind: 'session', userIds: users, payload: { title: `⏱ ${after.name}`, body: openMsg, url, tag } }];
     }
     return [];
   }
@@ -337,6 +381,7 @@ export function createApp(opts: AppOptions) {
     const users = pendingHumans(l).map((teamId) => l.humans[teamId].userId);
     if (!users.length) return [];
     return [{
+      kind: 'reminder',
       userIds: users,
       payload: {
         title: `⏰ ${l.name}: falta 1 hora!`,
@@ -388,6 +433,100 @@ export function createApp(opts: AppOptions) {
     await store.put(`user:${id}`, user);
     if (googleSub) await store.put(`google:${googleSub}`, { userId: id });
     return { token: `${id}.${secret}`, user };
+  }
+
+  function publicUser(u: User) {
+    return {
+      id: u.id,
+      name: u.name,
+      firstName: u.firstName ?? '',
+      lastName: u.lastName ?? '',
+      email: u.email ?? null,
+      hasPassword: !!u.passwordHash,
+      google: !!u.googleSub,
+      avatar: u.avatar ?? null,
+      prefs: u.prefs ?? DEFAULT_PREFS,
+      devices: (u.tokenHashes ?? []).length,
+      push: (u.push ?? []).length,
+      createdAt: u.createdAt,
+    };
+  }
+
+  /** Grava e-mail e senha num perfil (cadastro novo ou perfil antigo só com apelido). */
+  async function setCredentials(userId: string, email: string, password: string) {
+    const hash = await hashPassword(password);
+    await locks.run(`email:${email}`, async () => {
+      const taken = await store.get<{ userId: string }>(`email:${email}`);
+      if (taken && taken.userId !== userId) throw new HttpError(409, 'Já existe uma conta com esse e-mail. Use "Entrar".');
+      await store.put(`email:${email}`, { userId });
+    });
+    await updateUser(userId, (u) => ({ ...u, email, passwordHash: hash }));
+  }
+
+  /** Troca o apelido também nas ligas e no ranking. */
+  async function propagateName(user: User, name: string) {
+    for (const id of user.leagues) {
+      await locks.run(`league:${id}`, async () => {
+        const l = await store.get<LeagueState>(`league:${id}`);
+        const teamId = l && teamOf(l, user.id);
+        if (!l || !teamId || l.humans[teamId].name === name) return;
+        await store.put(`league:${id}`, { ...l, humans: { ...l.humans, [teamId]: { ...l.humans[teamId], name } }, rev: l.rev + 1 });
+      });
+    }
+    await locks.run('ranking', async () => {
+      const doc = await store.get<{ entries: Record<string, RankingEntry> }>('ranking');
+      if (doc?.entries[user.id]) await store.put('ranking', { entries: { ...doc.entries, [user.id]: { ...doc.entries[user.id], name } } });
+    });
+  }
+
+  /** Histórico de ligas online do usuário (posição, pontos e cada GP). */
+  async function leagueHistory(user: User) {
+    const out = [];
+    for (const id of user.leagues) {
+      const l = await store.get<LeagueState>(`league:${id}`);
+      if (!l) continue;
+      const teamId = teamOf(l, user.id);
+      if (!teamId) continue;
+      const table = standings({ results: l.results, points: l.points } as SeasonState);
+      const row = table.find((r) => r.teamId === teamId)!;
+      out.push({
+        id: l.id,
+        name: l.name,
+        status: l.status,
+        teamId,
+        createdAt: l.createdAt,
+        position: l.results.length ? row.position : null,
+        points: row.points,
+        wins: row.wins,
+        podiums: row.podiums,
+        champion: l.status === 'finished' && row.position === 1,
+        races: l.results.map((r) => {
+          const me = r.order.find((o) => o.teamId === teamId)!;
+          return { trackId: r.trackId, position: me.position, status: me.status, points: me.points, winner: r.order[0].teamId };
+        }),
+      });
+    }
+    return out;
+  }
+
+  function validateSolo(v: unknown): SoloEntry {
+    const e = v as SoloEntry;
+    const int = (x: unknown, min: number, max: number) => (Number.isInteger(x) && (x as number) >= min && (x as number) <= max ? (x as number) : undefined);
+    if (!e || (e.mode !== 'rapida' && e.mode !== 'temporada')) throw new HttpError(400, 'Registro inválido.');
+    if (!TEAMS.some((t) => t.id === e.teamId)) throw new HttpError(400, 'Equipe inválida.');
+    if (e.trackId !== undefined && !TRACKS.some((t) => t.id === e.trackId)) throw new HttpError(400, 'Pista inválida.');
+    return {
+      mode: e.mode,
+      date: now().toISOString(),
+      teamId: e.teamId,
+      difficulty: ['facil', 'normal', 'dificil'].includes(e.difficulty) ? e.difficulty : 'normal',
+      trackId: e.trackId,
+      position: int(e.position, 1, 10),
+      points: int(e.points, 0, 500),
+      championship: int(e.championship, 1, 10),
+      wins: int(e.wins, 0, 10),
+      podiums: int(e.podiums, 0, 10),
+    };
   }
 
   async function api(req: IncomingMessage, res: ServerResponse, path: string) {
@@ -445,7 +584,118 @@ export function createApp(opts: AppOptions) {
       return send(res, 200, { token, user: { id: user.id, name: user.name } });
     }
 
+    if (method === 'POST' && path === '/api/auth/signup') {
+      limit(`signup:${ip}`, 5, 60 * 60_000);
+      const body = await readJson(req);
+      const current = await optionalAuth(req);
+      let email: string;
+      let password: string;
+      let firstName: string;
+      let lastName: string;
+      let nickname: string;
+      try {
+        // Perfil antigo ganhando e-mail e senha: nome e sobrenome são opcionais.
+        firstName = cleanText(body.firstName, 30, 'seu nome', !current) || (current?.firstName ?? '');
+        lastName = cleanText(body.lastName, 40, 'seu sobrenome', !current) || (current?.lastName ?? '');
+        nickname = cleanText(body.nickname, 20, 'um apelido');
+        email = normalizeEmail(body.email);
+        password = validatePassword(body.password);
+      } catch (e) {
+        throw new HttpError(400, (e as Error).message);
+      }
+      if (current?.passwordHash) throw new HttpError(409, 'Este perfil já tem e-mail e senha.');
+      // Perfil antigo (só apelido) ganha e-mail e senha; senão, cria um novo.
+      const userId = current ? current.id : (await createUser(nickname)).user.id;
+      await setCredentials(userId, email, password);
+      await updateUser(userId, (u) => ({ ...u, firstName, lastName, name: nickname }));
+      if (current && current.name !== nickname) await propagateName(current, nickname);
+      const token = await issueToken(userId);
+      const u = (await store.get<User>(`user:${userId}`))!;
+      return send(res, 200, { token, user: publicUser(u) });
+    }
+
+    if (method === 'POST' && path === '/api/auth/login') {
+      limit(`login:${ip}`, 20, 15 * 60_000);
+      const body = await readJson(req);
+      let email: string;
+      try {
+        email = normalizeEmail(body.email);
+      } catch {
+        throw new HttpError(401, 'E-mail ou senha incorretos.');
+      }
+      limit(`login-email:${email}`, 10, 15 * 60_000);
+      const ref = await store.get<{ userId: string }>(`email:${email}`);
+      const u = ref ? await store.get<User>(`user:${ref.userId}`) : null;
+      const ok = await verifyPassword(String(body.password ?? ''), u?.passwordHash);
+      if (!u || !ok) throw new HttpError(401, 'E-mail ou senha incorretos.');
+      const token = await issueToken(u.id);
+      return send(res, 200, { token, user: publicUser(u) });
+    }
+
     const user = await auth(req);
+
+    if (method === 'GET' && path === '/api/profile') {
+      return send(res, 200, publicUser(user));
+    }
+
+    if (method === 'POST' && path === '/api/profile') {
+      const body = await readJson(req);
+      let patch: Partial<User>;
+      try {
+        patch = {
+          firstName: body.firstName !== undefined ? cleanText(body.firstName, 30, 'seu nome', false) : user.firstName,
+          lastName: body.lastName !== undefined ? cleanText(body.lastName, 40, 'seu sobrenome', false) : user.lastName,
+          name: body.nickname !== undefined ? cleanText(body.nickname, 20, 'um apelido') : user.name,
+          avatar: body.avatar !== undefined ? (body.avatar === null ? undefined : validateAvatar(body.avatar)) : user.avatar,
+          prefs: body.prefs !== undefined ? validatePrefs(body.prefs) : user.prefs,
+        };
+      } catch (e) {
+        throw new HttpError(400, (e as Error).message);
+      }
+      const u = await updateUser(user.id, (x) => ({ ...x, ...patch }));
+      if (patch.name !== user.name) await propagateName(user, patch.name!);
+      return send(res, 200, publicUser(u));
+    }
+
+    if (method === 'POST' && path === '/api/auth/password') {
+      limit(`password:${user.id}`, 10, 15 * 60_000);
+      const body = await readJson(req);
+      if (!user.passwordHash) throw new HttpError(400, 'Este perfil ainda não tem senha.');
+      if (!(await verifyPassword(String(body.current ?? ''), user.passwordHash))) throw new HttpError(401, 'Senha atual incorreta.');
+      let next: string;
+      try {
+        next = validatePassword(body.next);
+      } catch (e) {
+        throw new HttpError(400, (e as Error).message);
+      }
+      const hash = await hashPassword(next);
+      await updateUser(user.id, (u) => ({ ...u, passwordHash: hash }));
+      // Troca de senha desconecta os outros aparelhos.
+      const token = await issueToken(user.id, true);
+      return send(res, 200, { token });
+    }
+
+    if (method === 'POST' && path === '/api/auth/logout') {
+      const hash = requestTokenHash(req);
+      await updateUser(user.id, (u) => ({ ...u, tokenHashes: u.tokenHashes.filter((h) => h !== hash) }));
+      return send(res, 200, { ok: true });
+    }
+
+    if (method === 'GET' && path === '/api/profile/history') {
+      const solo = (await store.get<{ entries: SoloEntry[] }>(`history:${user.id}`)) ?? { entries: [] };
+      return send(res, 200, { leagues: await leagueHistory(user), solo: solo.entries });
+    }
+
+    if (method === 'POST' && path === '/api/profile/history') {
+      limit(`history:${user.id}`, 60, 60 * 60_000);
+      const body = await readJson(req);
+      const entry = validateSolo(body.entry);
+      await locks.run(`history:${user.id}`, async () => {
+        const doc = (await store.get<{ entries: SoloEntry[] }>(`history:${user.id}`)) ?? { entries: [] };
+        await store.put(`history:${user.id}`, { entries: [entry, ...doc.entries].slice(0, 300) });
+      });
+      return send(res, 200, { ok: true });
+    }
 
     if (method === 'GET' && path === '/api/me') {
       const leagues = [];
@@ -453,7 +703,7 @@ export function createApp(opts: AppOptions) {
         const l = await store.get<LeagueState>(`league:${id}`);
         if (l) leagues.push({ id: l.id, name: l.name, code: l.code, status: l.status, round: l.round, members: Object.keys(l.humans).length });
       }
-      return send(res, 200, { user: { id: user.id, name: user.name, google: !!user.googleSub, devices: user.tokenHashes.length, push: (user.push ?? []).length }, leagues });
+      return send(res, 200, { user: publicUser(user), leagues });
     }
 
     if (method === 'POST' && path === '/api/token/new') {
@@ -472,7 +722,7 @@ export function createApp(opts: AppOptions) {
       const sub = body.subscription;
       const clean = { endpoint: sub.endpoint, keys: { p256dh: sub.keys.p256dh, auth: sub.keys.auth } };
       await updateUser(user.id, (u) => ({ ...u, push: [...(u.push ?? []).filter((s) => s.endpoint !== clean.endpoint), clean].slice(-MAX_PUSH) }));
-      await notify([{ userIds: [user.id], payload: { title: '🔔 Notificações ligadas!', body: 'Você vai receber avisos de sessões, prazos e resultados.', tag: 'teste' } }]).catch(() => undefined);
+      await notify([{ kind: 'system', userIds: [user.id], payload: { title: '🔔 Notificações ligadas!', body: 'Você vai receber avisos de sessões, prazos e resultados.', tag: 'teste' } }]).catch(() => undefined);
       return send(res, 200, { ok: true });
     }
 

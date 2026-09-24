@@ -283,3 +283,36 @@ body.crt::after {
   .stepbar-info .yellow { font-size: 9px; }
   .stepbar .btn { font-size: 9px; padding: 8px 10px; }
 }
+
+/* --------------------------------------------------- conta e perfil --- */
+.narrow { max-width: 560px; }
+.form { display: grid; gap: 6px; margin: 8px 0; }
+.form .btn { justify-self: start; margin-top: 8px; }
+.field {
+  font: inherit;
+  font-size: 10px;
+  width: 100%;
+  padding: 10px;
+  background: #0f1020;
+  color: var(--text);
+  border: 3px solid #5a5f9a;
+}
+.field:focus { outline: none; border-color: var(--yellow); }
+.check { display: flex; gap: 10px; align-items: flex-start; color: var(--text); font-size: 9px; margin: 8px 0; cursor: pointer; }
+.check input { width: 18px; height: 18px; accent-color: var(--yellow); flex: none; }
+.or { text-align: center; color: var(--muted); margin: 12px 0; font-size: 9px; }
+.toolbar .account img { vertical-align: middle; }
+.toolbar .account { max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.swatches { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 10px; }
+.swatch { width: 26px; height: 26px; border: 3px solid #000; cursor: pointer; padding: 0; }
+.swatch.on { outline: 3px solid var(--yellow); }
+.presets { display: flex; flex-wrap: wrap; gap: 6px; }
+.preset { background: var(--panel-2); border: 3px solid #5a5f9a; padding: 4px; cursor: pointer; }
+.preset:hover { border-color: var(--yellow); }
+.stats-grid .stat-box { text-align: center; font-size: 9px; }
+.stats-grid .big { font-size: 20px; line-height: 1.4; }
+.chips { display: flex; flex-wrap: wrap; gap: 4px; margin: 8px 0; }
+.chip { font-size: 8px; padding: 3px 6px; background: #3a3d6a; }
+.chip.win { background: var(--yellow); color: #111; }
+.chip.pod { background: var(--green); color: #111; }
+.chip.dnf { background: var(--red); }

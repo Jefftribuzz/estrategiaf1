@@ -3,6 +3,7 @@ import { TEAMS } from '../engine/data/teams';
 import type { LeagueView } from '../engine/league';
 import type { SessionId } from '../engine/types';
 import { carSprite, helmetSprite } from './sprites';
+import type { Avatar, History, Prefs, Profile, SoloEntry } from './profile';
 import { esc } from './views';
 
 // Cliente da API do multiplayer + telas de conta, lista de ligas e lobby.
@@ -88,9 +89,30 @@ export const api = {
     const r = await call<{ token: string }>('/api/token/rotate', {});
     setToken(r.token);
   },
+  async signup(data: { firstName: string; lastName: string; nickname: string; email: string; password: string }) {
+    const r = await call<{ token: string; user: Profile }>('/api/auth/signup', data);
+    setToken(r.token);
+    return r.user;
+  },
+  async login(email: string, password: string) {
+    const r = await call<{ token: string; user: Profile }>('/api/auth/login', { email, password });
+    setToken(r.token);
+    return r.user;
+  },
+  async logout() {
+    await call('/api/auth/logout', {}).catch(() => undefined);
+    setToken(null);
+  },
+  profile: () => call<Profile>('/api/profile'),
+  saveProfile: (patch: Partial<{ firstName: string; lastName: string; nickname: string; avatar: Avatar | null; prefs: Prefs }>) => call<Profile>('/api/profile', patch),
+  async changePassword(current: string, next: string) {
+    const r = await call<{ token: string }>('/api/auth/password', { current, next });
+    setToken(r.token);
+  },
+  history: () => call<History>('/api/profile/history'),
+  addHistory: (entry: Omit<SoloEntry, 'date'>) => call<{ ok: boolean }>('/api/profile/history', { entry }),
   pushSubscribe: (subscription: unknown) => call<{ ok: boolean }>('/api/push/subscribe', { subscription }),
   pushUnsubscribe: (endpoint: string) => call<{ ok: boolean }>('/api/push/unsubscribe', { endpoint }),
-  logout: () => setToken(null),
   me: () => call<MeResponse>('/api/me'),
   create: (name: string, difficulty: string, pace: string) =>
     call<LeagueView>('/api/leagues', { name, difficulty, pace, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone }),
@@ -119,8 +141,12 @@ const STATUS: Record<string, string> = { lobby: 'Aguardando largada', running: '
 export function onlineView(me: MeResponse | null, loading: boolean, deviceLink: string | null = null): string {
   if (!getToken()) {
     return `<h1>Multiplayer online</h1>
-      <div class="panel"><h2>Crie seu perfil</h2>
-        <p>Escolha um apelido. Seu acesso fica salvo neste navegador.</p>
+      <div class="panel"><h2>Entre na sua conta</h2>
+        <p>Com e-mail e senha você joga de qualquer aparelho e guarda seu histórico.</p>
+        <div class="row"><button class="btn" data-act="goto" data-arg="login">Entrar</button>
+        <button class="btn secondary" data-act="login-create">Criar conta</button></div></div>
+      <div class="panel"><h2>Ou só um apelido, rapidinho</h2>
+        <p>O acesso fica salvo só neste navegador. Dá para adicionar e-mail e senha depois, no perfil.</p>
         <div class="row"><input id="nick" type="text" maxlength="20" placeholder="Seu apelido" style="font:inherit;padding:8px;background:#0f1020;color:#fff;border:3px solid #5a5f9a">
         <button class="btn" data-act="online-register">Entrar ▶</button></div>
         <div id="google-btn" style="margin-top:14px"></div></div>
@@ -177,7 +203,7 @@ function accountPanel(me: MeResponse, deviceLink: string | null): string {
         : st === 'ligado'
           ? '<p class="green">🔔 Notificações ligadas neste aparelho.</p><button class="btn small secondary" data-act="push-off">Desligar notificações</button>'
           : '<button class="btn" data-act="push-on">🔔 Ligar notificações</button><p class="muted" style="font-size:8px">Avisos de sessão aberta, lembrete 1 hora antes do prazo e resultados.</p>';
-  return `<div class="panel"><h2>Conta</h2>
+  return `<div class="panel"><div class="row between"><h2>Conta</h2><button class="btn small" data-act="goto" data-arg="perfil">👤 Meu perfil</button></div>
     <div class="grid two">
       <div><h3>Notificações</h3>${push}</div>
       <div><h3>Seus aparelhos</h3>

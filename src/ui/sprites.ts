@@ -123,11 +123,15 @@ export function carSprite(team: Team): string {
 
 /** Capacete de frente/perfil (16x16 px). */
 export function helmetSprite(team: Team): string {
-  const key = `helmet:${team.id}`;
+  return helmetFromDesign(team.driver.helmet);
+}
+
+/** Capacete com qualquer combinação de cores (usado também no avatar do perfil). */
+export function helmetFromDesign(h: HelmetDesign): string {
+  const key = `helmet:${h.base}:${h.stripe1}:${h.stripe2}:${h.visor}`;
   const hit = cache.get(key);
   if (hit) return hit;
   const [c, ctx] = canvas(16, 16);
-  const h = team.driver.helmet;
   // contorno
   rect(ctx, 4, 1, 8, 1, OUTLINE);
   rect(ctx, 2, 2, 12, 1, OUTLINE);

@@ -160,6 +160,27 @@ As chaves das notificações (VAPID) são geradas e guardadas no banco
 automaticamente. O servidor cria a tabela sozinho (`gp8_kv`). Sem
 `DATABASE_URL`, ele grava em arquivos na pasta `DATA_DIR`.
 
+## Contas e perfil
+
+- **Login com e-mail e senha**: senha guardada só como hash scrypt com sal
+  próprio. Login com mensagem única ("E-mail ou senha incorretos"), limite de
+  tentativas por IP e por e-mail. Trocar a senha desconecta os outros aparelhos.
+- Perfis antigos, só com apelido, podem **adicionar e-mail e senha** sem perder
+  ligas nem histórico.
+- **Meu perfil**:
+  - **Dados:** nome, sobrenome e apelido (o apelido também muda nas ligas e no
+    Hall da fama);
+  - **Avatar:** capacete em pixel art, com as cores de uma lenda ou uma paleta
+    de 16 cores;
+  - **Preferências:** som, CRT e tipos de notificação (sessão aberta, lembrete
+    de prazo, resultados), sincronizados entre aparelhos;
+  - **Histórico:** ligas online, com posição, pontos, vitórias, pódios e cada
+    GP, e as corridas rápidas e temporadas solo jogadas logado;
+  - **Segurança:** trocar senha, link de acesso para outro aparelho e sair.
+- Recuperar senha por e-mail ainda não existe, porque exige um serviço de envio
+  de e-mails. Enquanto isso, dá para entrar pelo Google (se vinculado) ou pelo
+  link de acesso gerado em outro aparelho.
+
 ## SEO (busca no Google)
 
 O build gera, além da landing, páginas de conteúdo feitas para busca:
