@@ -64,10 +64,23 @@ export interface TrackProfile {
   fastCorners: number;
 }
 
+/** Iluminação da sessão, pelo horário local do circuito. */
+export type Light = 'dia' | 'entardecer' | 'noite';
+
+export interface SessionTime {
+  /** Horário local no circuito (HH:MM), no estilo da F1 real. */
+  local: string;
+  light: Light;
+}
+
 export interface Track {
   id: string;
   name: string;
   country: string;
+  /** Cidade de referência do fuso do circuito. */
+  city: string;
+  /** Horários locais de cada sessão no circuito (ambientação). */
+  times: Record<'teste' | 'classificacao' | 'corrida', SessionTime>;
   flag: string;
   profile: TrackProfile;
   /** Tempo de volta de referência em segundos. */

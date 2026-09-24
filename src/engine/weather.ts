@@ -13,15 +13,23 @@ export function rollWeekendWeather(track: Track, rng: Rng): WeekendWeather {
   for (const s of SESSIONS) {
     const rainy: boolean = prev && rng.chance(0.5) ? prev.rain > 0 : rng.chance(track.rainChance);
     const rain: RainLevel = rainy ? (rng.chance(0.45) ? 2 : 1) : 0;
-    const hot: boolean = prev && rng.chance(0.6) ? prev.hot : rng.chance(track.hotChance);
+    const light = track.times[s].light;
+    const hotChance = hotChanceFor(track, s);
+    const hot: boolean = prev && rng.chance(0.6) ? prev.hot && light !== 'noite' : rng.chance(hotChance);
     const windy: boolean = prev && rng.chance(0.4) ? prev.windy : rng.chance(track.windChance);
-    const temperature = Math.round((hot ? rng.range(26, 35) : rng.range(12, 21)) - (rain ? 3 : 0));
+    const temperature = Math.round((hot ? rng.range(26, 35) : rng.range(12, 21)) - (rain ? 3 : 0) - (light === 'noite' ? 3 : 0));
     const windSpeed = Math.round(windy ? rng.range(25, 45) : rng.range(3, 14));
     const w: Weather = { rain, hot, windy, temperature, windSpeed };
     out[s] = w;
     prev = w;
   }
   return out;
+}
+
+/** À noite a pista esfria: menos chance de calor. */
+export function hotChanceFor(track: Track, session: SessionId): number {
+  const light = track.times[session].light;
+  return track.hotChance * (light === 'noite' ? 0.35 : light === 'entardecer' ? 0.7 : 1);
 }
 
 /** Precisão da previsão conforme a distância (em sessões) até o evento. */
@@ -68,7 +76,7 @@ export function forecastFor(
     session,
     rainProb: round2(rainProb),
     heavyRainProb: round2(rainProb * heavyCond),
-    hotProb: round2(blend(w.hot, track.hotChance)),
+    hotProb: round2(blend(w.hot, hotChanceFor(track, session))),
     windProb: round2(blend(w.windy, track.windChance)),
     tempRange: [Math.round(tCenter - spread / 2), Math.round(tCenter + spread / 2)],
     windRange: [Math.max(0, Math.round(wCenter - spread)), Math.round(wCenter + spread)],

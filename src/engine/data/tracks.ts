@@ -4,11 +4,17 @@ import type { Track } from '../types';
 // replay. Os traçados vêm das coordenadas reais dos circuitos (projeto
 // bacinger/f1-circuits, licença MIT), simplificados numa grade de 0 a 100 e
 // começando na linha de chegada.
+//
+// Horários locais no estilo da F1 real (corridas de dia, 14h-15h locais).
+// Fictícios: Baku à noite (como os GPs de rua de Singapura e Jidá) e
+// Interlagos no entardecer (como a final de Abu Dhabi).
 export const TRACKS: Track[] = [
   {
     id: 'monza',
     name: 'Monza',
     country: 'Itália',
+    city: 'Monza',
+    times: { teste: { local: '17:00', light: 'dia' }, classificacao: { local: '16:00', light: 'dia' }, corrida: { local: '15:00', light: 'dia' } },
     flag: 'ITA',
     profile: { straights: 0.7, slowCorners: 0.1, fastCorners: 0.2 },
     baseLap: 81,
@@ -28,6 +34,8 @@ export const TRACKS: Track[] = [
     id: 'monaco',
     name: 'Mônaco',
     country: 'Mônaco',
+    city: 'Monte Carlo',
+    times: { teste: { local: '17:00', light: 'dia' }, classificacao: { local: '16:00', light: 'dia' }, corrida: { local: '15:00', light: 'dia' } },
     flag: 'MON',
     profile: { straights: 0.15, slowCorners: 0.7, fastCorners: 0.15 },
     baseLap: 72,
@@ -47,6 +55,8 @@ export const TRACKS: Track[] = [
     id: 'interlagos',
     name: 'Interlagos',
     country: 'Brasil',
+    city: 'São Paulo',
+    times: { teste: { local: '15:30', light: 'dia' }, classificacao: { local: '18:00', light: 'entardecer' }, corrida: { local: '17:00', light: 'entardecer' } },
     flag: 'BRA',
     profile: { straights: 0.4, slowCorners: 0.3, fastCorners: 0.3 },
     baseLap: 71,
@@ -66,6 +76,8 @@ export const TRACKS: Track[] = [
     id: 'spa',
     name: 'Spa-Francorchamps',
     country: 'Bélgica',
+    city: 'Stavelot',
+    times: { teste: { local: '17:00', light: 'dia' }, classificacao: { local: '16:00', light: 'dia' }, corrida: { local: '15:00', light: 'dia' } },
     flag: 'BEL',
     profile: { straights: 0.5, slowCorners: 0.15, fastCorners: 0.35 },
     baseLap: 106,
@@ -85,6 +97,8 @@ export const TRACKS: Track[] = [
     id: 'silverstone',
     name: 'Silverstone',
     country: 'Inglaterra',
+    city: 'Silverstone',
+    times: { teste: { local: '16:00', light: 'dia' }, classificacao: { local: '15:00', light: 'dia' }, corrida: { local: '15:00', light: 'dia' } },
     flag: 'GBR',
     profile: { straights: 0.35, slowCorners: 0.15, fastCorners: 0.5 },
     baseLap: 88,
@@ -104,6 +118,8 @@ export const TRACKS: Track[] = [
     id: 'suzuka',
     name: 'Suzuka',
     country: 'Japão',
+    city: 'Suzuka',
+    times: { teste: { local: '15:00', light: 'dia' }, classificacao: { local: '15:00', light: 'dia' }, corrida: { local: '14:00', light: 'dia' } },
     flag: 'JPN',
     profile: { straights: 0.3, slowCorners: 0.25, fastCorners: 0.45 },
     baseLap: 91,
@@ -123,6 +139,8 @@ export const TRACKS: Track[] = [
     id: 'hungaroring',
     name: 'Hungaroring',
     country: 'Hungria',
+    city: 'Budapeste',
+    times: { teste: { local: '17:00', light: 'dia' }, classificacao: { local: '16:00', light: 'dia' }, corrida: { local: '15:00', light: 'dia' } },
     flag: 'HUN',
     profile: { straights: 0.2, slowCorners: 0.55, fastCorners: 0.25 },
     baseLap: 78,
@@ -142,6 +160,8 @@ export const TRACKS: Track[] = [
     id: 'montreal',
     name: 'Montreal',
     country: 'Canadá',
+    city: 'Montreal',
+    times: { teste: { local: '16:00', light: 'dia' }, classificacao: { local: '16:00', light: 'dia' }, corrida: { local: '14:00', light: 'dia' } },
     flag: 'CAN',
     profile: { straights: 0.6, slowCorners: 0.3, fastCorners: 0.1 },
     baseLap: 74,
@@ -161,6 +181,8 @@ export const TRACKS: Track[] = [
     id: 'mexico',
     name: 'Cidade do México',
     country: 'México',
+    city: 'Cidade do México',
+    times: { teste: { local: '16:00', light: 'dia' }, classificacao: { local: '15:00', light: 'dia' }, corrida: { local: '14:00', light: 'dia' } },
     flag: 'MEX',
     profile: { straights: 0.55, slowCorners: 0.3, fastCorners: 0.15 },
     baseLap: 78,
@@ -180,6 +202,8 @@ export const TRACKS: Track[] = [
     id: 'baku',
     name: 'Baku',
     country: 'Azerbaijão',
+    city: 'Baku',
+    times: { teste: { local: '21:00', light: 'noite' }, classificacao: { local: '21:00', light: 'noite' }, corrida: { local: '20:00', light: 'noite' } },
     flag: 'AZE',
     profile: { straights: 0.6, slowCorners: 0.35, fastCorners: 0.05 },
     baseLap: 104,

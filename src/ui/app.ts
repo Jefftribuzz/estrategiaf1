@@ -4,7 +4,7 @@ import { getTeam, TEAMS } from '../engine/data/teams';
 import { getTrack, TRACKS } from '../engine/data/tracks';
 import { formatLap, type PracticeRun } from '../engine/session';
 import { strategyCost } from '../engine/strategy';
-import type { CarSetup, Difficulty, DriveMode, RaceStrategy, SessionId } from '../engine/types';
+import type { CarSetup, Difficulty, DriveMode, Light, RaceStrategy, SessionId, Track } from '../engine/types';
 import { describeWeather } from '../engine/weather';
 import {
   createWeekend,
@@ -287,6 +287,14 @@ function fmtDate(iso: string): string {
   return `${day} · ${d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}`;
 }
 
+const LIGHT_ICON: Record<Light, string> = { dia: '☀️ dia', entardecer: '🌇 entardecer', noite: '🌙 noturna' };
+
+/** Horário local no circuito (estilo F1 real), com a iluminação. */
+function circuitTime(track: Track, session: SessionId): string {
+  const t = track.times[session];
+  return `No circuito: ${t.local} em ${esc(track.city)} · ${LIGHT_ICON[t.light]}`;
+}
+
 const SESSION_SCREEN: Record<SessionId, Screen> = { teste: 'practice', classificacao: 'quali', corrida: 'race' };
 
 function hubView(): string {
@@ -298,7 +306,8 @@ function hubView(): string {
     .map((s, i) => {
       const status = i < w.completed ? 'done' : i === w.completed ? 'next' : '';
       const icon = i < w.completed ? '✓' : i === w.completed ? '▶' : '🔒';
-      return `<div class="item ${status}"><span>D${i + 1}</span><span>${SESSION_LABEL[s.session]}<br><span class="muted">${fmtDate(s.date)}</span></span><span>${icon}</span></div>`;
+      return `<div class="item ${status}"><span>D${i + 1}</span><span>${SESSION_LABEL[s.session]}<br><span class="muted">${fmtDate(s.date)} (seu horário)</span>
+        <br><span class="muted">${circuitTime(track, s.session)}</span></span><span>${icon}</span></div>`;
     })
     .join('');
   const action = next
@@ -324,7 +333,7 @@ function hubView(): string {
       </div>
     </div>
     <h2>Previsão do tempo</h2>
-    <div class="grid three">${fc.map((f, i) => forecastCard(f, `D${i + 1} · ${SESSION_LABEL[f.session]}`, fmtDate(w.schedule[i].date))).join('')}</div>
+    <div class="grid three">${fc.map((f, i) => forecastCard(f, `D${i + 1} · ${SESSION_LABEL[f.session]}`, `${fmtDate(w.schedule[i].date)} · ${LIGHT_ICON[track.times[f.session].light]}`)).join('')}</div>
     ${w.completed >= 1 ? `<div class="row"><button class="btn secondary" data-act="goto" data-arg="practice">Telemetria do teste</button>
       ${w.completed >= 2 ? '<button class="btn secondary" data-act="goto" data-arg="quali">Grid de largada</button>' : ''}
       ${w.completed >= 3 ? '<button class="btn secondary" data-act="goto" data-arg="results">Resultado da corrida</button>' : ''}</div>` : ''}
@@ -530,7 +539,7 @@ function replayView(): string {
   const w = ui.weekend!;
   return `${header()}
     <h1>GP de ${esc(getTrack(w.trackId).name)}</h1>
-    <p class="muted">${esc(describeWeather(w.weather.corrida))}</p>
+    <p class="muted">${esc(describeWeather(w.weather.corrida))} · ${circuitTime(getTrack(w.trackId), 'corrida')}</p>
     <div class="replay">
       <div>
         <div class="hud" id="hud"></div>

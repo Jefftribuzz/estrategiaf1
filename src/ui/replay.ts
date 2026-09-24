@@ -299,7 +299,42 @@ export class Replay {
       }
     }
     ctx.restore();
+    this.paintLighting(ctx);
     return c;
+  }
+
+  /** Iluminação pelo horário local do circuito: noite com holofotes, entardecer alaranjado. */
+  private paintLighting(ctx: CanvasRenderingContext2D) {
+    const light = this.track.times.corrida.light;
+    if (light === 'entardecer') {
+      ctx.fillStyle = 'rgba(255,110,40,0.16)';
+      ctx.fillRect(0, 0, W, H);
+      return;
+    }
+    if (light !== 'noite') return;
+    ctx.fillStyle = 'rgba(4,6,28,0.62)';
+    ctx.fillRect(0, 0, W, H);
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    let acc = 0;
+    for (let i = 1; i < this.path.length; i++) {
+      const [x0, y0] = this.path[i - 1];
+      const [x1, y1] = this.path[i];
+      const len = Math.hypot(x1 - x0, y1 - y0);
+      for (let d = 0; d < len; d += 4) {
+        acc += 4;
+        if (acc < 26) continue;
+        acc = 0;
+        const x = x0 + ((x1 - x0) * d) / len;
+        const y = y0 + ((y1 - y0) * d) / len;
+        const g = ctx.createRadialGradient(x, y, 0, x, y, 16);
+        g.addColorStop(0, 'rgba(255,236,190,0.32)');
+        g.addColorStop(1, 'rgba(255,236,190,0)');
+        ctx.fillStyle = g;
+        ctx.fillRect(x - 16, y - 16, 32, 32);
+      }
+    }
+    ctx.restore();
   }
 
   // ------------------------------------------------------- desenho -------
@@ -330,6 +365,10 @@ export class Replay {
     ctx.fillRect(0, 0, 1, 1);
     ctx.fillStyle = out ? '#888' : team.livery.accent;
     ctx.fillRect(5, -3, 1, 6);
+    if (!out && this.track.times.corrida.light === 'noite') {
+      ctx.fillStyle = 'rgba(255,90,90,0.9)';
+      ctx.fillRect(-7, -1, 1, 2);
+    }
     ctx.restore();
   }
 
