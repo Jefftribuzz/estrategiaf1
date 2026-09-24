@@ -73,6 +73,8 @@ export interface SeasonState {
   results: RoundResult[];
   weekend: WeekendState | null;
   finished: boolean;
+  /** Multiplayer: início de cada GP (ISO), vindo do cronograma da liga. */
+  gpTimes?: string[];
 }
 
 export interface SeasonConfig {
@@ -125,6 +127,12 @@ export function modsFor(levels: DevLevels): ChassisMods {
 }
 
 export function gpDate(season: SeasonState, round: number): Date {
+  if (season.gpTimes?.[round]) {
+    // Na liga, o calendário mostra o dia anterior à primeira sessão do GP.
+    const d = new Date(season.gpTimes[round]);
+    d.setDate(d.getDate() - 1);
+    return d;
+  }
   const d = new Date(season.startDate);
   d.setDate(d.getDate() + round * DAYS_PER_GP);
   return d;
@@ -165,79 +173,95 @@ export function updateWeekend(season: SeasonState, weekend: WeekendState): Seaso
   return { ...season, weekend };
 }
 
-/** Fecha o GP: paga peças, prêmios, pontos, desgaste e desenvolvimento dos bots. */
-export function finishRound(season: SeasonState): SeasonState {
-  const w = season.weekend;
-  if (!w || w.completed < 3 || !w.race) throw new Error('O GP ainda não terminou.');
-  const me = season.playerTeamId;
-  const setup = w.setups[me];
-  let s: SeasonState = { ...season };
-  const track = w.trackId;
+/** Parte da temporada que pertence a uma equipe humana. */
+export interface HumanSeason {
+  cash: number;
+  ledger: LedgerEntry[];
+  ownedAero: string[];
+  engines: OwnedEngine[];
+}
 
-  // Gastos do jogador no fim de semana.
-  const spent = w.spent[me] ?? 0;
-  s.cash -= spent;
-  s.ledger = [...s.ledger, { round: s.round, label: 'Peças e pneus', amount: -spent }];
-
-  // Peças compradas entram na garagem; o motor usado ganha uma corrida.
-  const ownedAero = s.ownedAero.includes(setup.aero) ? [...s.ownedAero] : [...s.ownedAero, setup.aero];
-  let engines = s.engines.some((e) => e.id === setup.engine) ? [...s.engines] : [...s.engines, { id: setup.engine, races: 0 }];
+/** Fecha o GP para uma equipe humana: paga peças, garagem, desgaste e prêmio. */
+export function applyHumanRound(h: HumanSeason, w: WeekendState, teamId: string, round: number): HumanSeason {
+  const setup = w.setups[teamId];
+  const spent = w.spent[teamId] ?? 0;
+  let ledger = [...h.ledger, { round, label: 'Peças e pneus', amount: -spent }];
+  let cash = h.cash - spent;
+  const ownedAero = h.ownedAero.includes(setup.aero) ? [...h.ownedAero] : [...h.ownedAero, setup.aero];
+  let engines = h.engines.some((e) => e.id === setup.engine) ? [...h.engines] : [...h.engines, { id: setup.engine, races: 0 }];
   engines = engines.map((e) => (e.id === setup.engine ? { ...e, races: e.races + 1 } : e));
-  const mine = w.race.classification.find((c) => c.teamId === me)!;
-  const aero = mine.reason === 'Acidente' ? ownedAero.filter((a) => a !== setup.aero) : ownedAero;
+  const mine = w.race!.classification.find((c) => c.teamId === teamId)!;
+  let aero = ownedAero;
   if (mine.reason === 'Acidente') {
-    s.ledger = [...s.ledger, { round: s.round, label: `${getAero(setup.aero).name} destruída no acidente`, amount: 0 }];
+    aero = ownedAero.filter((a) => a !== setup.aero);
+    ledger = [...ledger, { round, label: `${getAero(setup.aero).name} destruída no acidente`, amount: 0 }];
   }
-  s.ownedAero = aero;
-  s.engines = engines;
-
-  // Pontos e prêmios.
-  const points = { ...s.points };
-  const botCash = { ...s.botCash };
-  for (const c of w.race.classification) {
-    points[c.teamId] += c.points;
-    const prize = c.status === 'finished' ? PRIZE[c.position - 1] ?? 0 : 0;
-    if (c.teamId === me) {
-      s.cash += prize;
-      if (prize) s.ledger = [...s.ledger, { round: s.round, label: `Prêmio (P${c.position})`, amount: prize }];
-    } else {
-      botCash[c.teamId] += prize;
-    }
+  const prize = mine.status === 'finished' ? (PRIZE[mine.position - 1] ?? 0) : 0;
+  if (prize) {
+    cash += prize;
+    ledger = [...ledger, { round, label: `Prêmio (P${mine.position})`, amount: prize }];
   }
+  return { cash, ledger, ownedAero: aero, engines };
+}
 
-  // Bots investem o prêmio em desenvolvimento (uma evolução por GP, se der).
-  const dev = { ...s.dev };
-  const rng = createRng(s.seed).fork(`dev:${s.round}`);
+/** Pontos do GP e desenvolvimento dos bots com o dinheiro dos prêmios. */
+export function applyRoundToField(
+  w: WeekendState,
+  humans: Set<string>,
+  points: Record<string, number>,
+  botCash: Record<string, number>,
+  dev: Record<string, DevLevels>,
+  seed: number,
+  round: number,
+): { points: Record<string, number>; botCash: Record<string, number>; dev: Record<string, DevLevels>; result: RoundResult } {
+  const p = { ...points };
+  const cash = { ...botCash };
+  for (const c of w.race!.classification) {
+    p[c.teamId] += c.points;
+    if (!humans.has(c.teamId) && c.status === 'finished') cash[c.teamId] += PRIZE[c.position - 1] ?? 0;
+  }
+  const d = { ...dev };
+  const rng = createRng(seed).fork(`dev:${round}`);
   for (const team of TEAMS) {
-    if (team.id === me) continue;
-    const lv = { ...dev[team.id] };
+    if (humans.has(team.id)) continue;
+    const lv = { ...d[team.id] };
     const open = DEV_AREAS.filter((a) => lv[a.id] < MAX_DEV_LEVEL);
     if (!open.length) continue;
     const minLevel = Math.min(...open.map((a) => lv[a.id]));
     const area = rng.pick(open.filter((a) => lv[a.id] === minLevel)).id;
     const cost = devCost(lv[area]);
-    if (botCash[team.id] >= cost) {
-      botCash[team.id] -= cost;
+    if (cash[team.id] >= cost) {
+      cash[team.id] -= cost;
       lv[area]++;
-      dev[team.id] = lv;
+      d[team.id] = lv;
     }
   }
-
   const result: RoundResult = {
-    trackId: track,
-    order: w.race.classification.map((c) => ({ teamId: c.teamId, position: c.position, points: c.points, status: c.status })),
-    fastestLap: w.race.fastestLap.teamId,
+    trackId: w.trackId,
+    order: w.race!.classification.map((c) => ({ teamId: c.teamId, position: c.position, points: c.points, status: c.status })),
+    fastestLap: w.race!.fastestLap.teamId,
   };
-  const round = s.round + 1;
+  return { points: p, botCash: cash, dev: d, result };
+}
+
+/** Fecha o GP: paga peças, prêmios, pontos, desgaste e desenvolvimento dos bots. */
+export function finishRound(season: SeasonState): SeasonState {
+  const w = season.weekend;
+  if (!w || w.completed < 3 || !w.race) throw new Error('O GP ainda não terminou.');
+  const me = season.playerTeamId;
+  const h = applyHumanRound(season, w, me, season.round);
+  const field = applyRoundToField(w, new Set([me]), season.points, season.botCash, season.dev, season.seed, season.round);
+  const round = season.round + 1;
   return {
-    ...s,
-    points,
-    botCash,
-    dev,
-    results: [...s.results, result],
+    ...season,
+    ...h,
+    points: field.points,
+    botCash: field.botCash,
+    dev: field.dev,
+    results: [...season.results, field.result],
     round,
     weekend: null,
-    finished: round >= s.calendar.length,
+    finished: round >= season.calendar.length,
   };
 }
 
