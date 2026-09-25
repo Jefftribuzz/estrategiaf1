@@ -19,7 +19,7 @@ let ipSeq = 0;
 async function call(path: string, token?: string, body?: unknown, ip = `10.0.0.${++ipSeq % 250}`) {
   const res = await fetch(base + path, {
     method: body === undefined ? 'GET' : 'POST',
-    headers: { 'content-type': 'application/json', 'x-forwarded-for': ip, ...(token ? { authorization: `Bearer ${token}` } : {}) },
+    headers: { 'content-type': 'application/json', 'x-gp8': 'api', 'x-forwarded-for': ip, ...(token ? { authorization: `Bearer ${token}` } : {}) },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   return { status: res.status, body: await res.json().catch(() => null) };
@@ -98,7 +98,7 @@ describe('conta com e-mail e senha', () => {
   test('troca de senha desconecta os outros aparelhos; sair só deste aparelho', async () => {
     const r = (await signup({ email: 'bia@exemplo.com', nickname: 'Bia' })).body;
     const other = (await call('/api/auth/login', undefined, { email: 'bia@exemplo.com', password: 'senhaForte1' })).body.token;
-    expect((await call('/api/auth/password', r.token, { current: 'errada123', next: 'novaSenha2' })).status).toBe(401);
+    expect((await call('/api/auth/password', r.token, { current: 'errada123', next: 'novaSenha2' })).status).toBe(403);
     const ch = await call('/api/auth/password', r.token, { current: 'senhaForte1', next: 'novaSenha2' });
     expect(ch.status).toBe(200);
     expect((await call('/api/me', other)).status).toBe(401);

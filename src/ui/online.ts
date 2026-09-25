@@ -8,49 +8,95 @@ import { esc } from './views';
 
 // Cliente da API do multiplayer + telas de conta, lista de ligas e lobby.
 
-const TOKEN_KEY = 'f1m8.token';
+/** Token antigo (versões anteriores guardavam o token aqui; hoje é cookie HttpOnly). */
+const LEGACY_TOKEN_KEY = 'f1m8.token';
+/** Só um aviso de "estou logado": o token fica num cookie que o JavaScript não lê. */
+const SESSION_KEY = 'f1m8.session';
 
 export interface MeResponse {
   user: { id: string; name: string; google?: boolean; devices?: number; push?: number };
   leagues: { id: string; name: string; code: string; status: string; round: number; members: number }[];
 }
 
-export function getToken(): string | null {
+let memSession: boolean | null = null;
+
+export function isLoggedIn(): boolean {
+  if (memSession !== null) return memSession;
   try {
-    return localStorage.getItem(TOKEN_KEY);
+    return localStorage.getItem(SESSION_KEY) === '1' || !!localStorage.getItem(LEGACY_TOKEN_KEY);
   } catch {
-    return null;
+    return false;
   }
 }
 
-function setToken(t: string | null) {
+function setSession(on: boolean) {
+  memSession = on;
   try {
-    if (t) localStorage.setItem(TOKEN_KEY, t);
-    else localStorage.removeItem(TOKEN_KEY);
+    if (on) localStorage.setItem(SESSION_KEY, '1');
+    else localStorage.removeItem(SESSION_KEY);
+    localStorage.removeItem(LEGACY_TOKEN_KEY);
   } catch {
     /* sem armazenamento: o login vale só nesta aba */
   }
-  memToken = t;
 }
 
-let memToken: string | null = null;
+/** Enquanto migra o token antigo, as outras chamadas esperam. */
+let migration: Promise<void> | null = null;
 
-async function call<T>(path: string, body?: unknown): Promise<T> {
-  const token = memToken ?? getToken();
+async function call<T>(path: string, body?: unknown, bearer?: string): Promise<T> {
+  if (migration && !bearer) await migration;
   let res: Response;
   try {
     res = await fetch(path, {
       method: body === undefined ? 'GET' : 'POST',
-      headers: { 'content-type': 'application/json', ...(token ? { authorization: `Bearer ${token}` } : {}) },
+      credentials: 'same-origin',
+      // X-GP8 protege contra CSRF: outro site não consegue mandar este cabeçalho.
+      headers: { 'content-type': 'application/json', 'x-gp8': '1', ...(bearer ? { authorization: `Bearer ${bearer}` } : {}) },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
   } catch {
     throw new Error('Sem conexão com o servidor do jogo.');
   }
   const data = await res.json().catch(() => ({}));
-  if (res.status === 401) setToken(null);
+  if (res.status === 401) setSession(false);
   if (!res.ok) throw new Error((data as { error?: string }).error ?? `Erro ${res.status}`);
   return data as T;
+}
+
+/** Aparelho que ainda tem o token antigo no localStorage: troca por cookie. */
+export function migrateLegacyToken(): Promise<void> {
+  let old: string | null = null;
+  try {
+    old = localStorage.getItem(LEGACY_TOKEN_KEY);
+  } catch {
+    return Promise.resolve();
+  }
+  if (!old) return Promise.resolve();
+  const token = old;
+  migration = call('/api/auth/cookie', {}, token).then(
+    () => setSession(true),
+    () => setSession(false),
+  );
+  return migration.finally(() => (migration = null));
+}
+
+/** Código de aparelho em dois blocos: ABCD-EFGH. */
+export const fmtDeviceCode = (c: string) => `${c.slice(0, 4)}-${c.slice(4)}`;
+
+export interface DeviceCode {
+  code: string;
+  expiresAt: string;
+}
+
+/** Painel com o código para entrar em outro aparelho. */
+export function deviceCodePanel(dc: DeviceCode | null, label: string): string {
+  if (!dc) return `<button class="btn small secondary" data-act="device-code">📱 ${esc(label)}</button>`;
+  const until = new Date(dc.expiresAt).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+  return `<div class="panel tight" style="text-align:center">
+    <p style="font-size:8px">No outro aparelho, abra <b>estrategiaf1.com.br/jogar</b> → Conta → <b>Tenho um código</b> e digite:</p>
+    <div class="yellow" style="font-size:20px;letter-spacing:4px;margin:8px 0">${esc(fmtDeviceCode(dc.code))}</div>
+    <p class="muted" style="font-size:8px">Vale até ${esc(until)} e só pode ser usado uma vez.</p>
+    <p class="red" style="font-size:8px">Não passe esse código para ninguém: ele dá acesso ao seu perfil.</p></div>`;
 }
 
 export interface ServerConfig {
@@ -67,48 +113,52 @@ export interface RankingRow {
   seasons: number;
 }
 
-export function useToken(t: string) {
-  setToken(t);
-}
-
 export const api = {
   async register(name: string) {
-    const r = await call<{ token: string }>('/api/register', { name });
-    setToken(r.token);
+    await call('/api/register', { name });
+    setSession(true);
   },
   config: () => call<ServerConfig>('/api/config'),
   ranking: () => call<{ ranking: RankingRow[] }>('/api/ranking'),
   /** Login (ou vínculo, se já logado) com a credencial do Google. */
   async google(credential: string) {
-    const r = await call<{ token?: string; linked?: boolean }>('/api/login/google', { credential });
-    if (r.token) setToken(r.token);
+    const r = await call<{ user?: unknown; linked?: boolean }>('/api/login/google', { credential });
+    if (r.user) setSession(true);
     return r;
   },
-  newDeviceToken: () => call<{ token: string }>('/api/token/new', {}),
-  async rotate() {
-    const r = await call<{ token: string }>('/api/token/rotate', {});
-    setToken(r.token);
+  /** Código curto (10 min, uso único) para entrar com este perfil em outro aparelho. */
+  deviceCode: () => call<{ code: string; expiresAt: string }>('/api/device/code', {}),
+  async redeemCode(code: string) {
+    const r = await call<{ user: Profile }>('/api/device/redeem', { code });
+    setSession(true);
+    return r.user;
   },
+  rotate: () => call('/api/token/rotate', {}),
   async signup(data: { firstName: string; lastName: string; nickname: string; email: string; password: string }) {
-    const r = await call<{ token: string; user: Profile }>('/api/auth/signup', data);
-    setToken(r.token);
+    const r = await call<{ user: Profile }>('/api/auth/signup', data);
+    setSession(true);
     return r.user;
   },
   async login(email: string, password: string) {
-    const r = await call<{ token: string; user: Profile }>('/api/auth/login', { email, password });
-    setToken(r.token);
+    const r = await call<{ user: Profile }>('/api/auth/login', { email, password });
+    setSession(true);
     return r.user;
   },
   async logout() {
     await call('/api/auth/logout', {}).catch(() => undefined);
-    setToken(null);
+    setSession(false);
   },
+  forgot: (email: string) => call<{ ok: boolean }>('/api/auth/forgot', { email }),
+  async resetPassword(token: string, password: string) {
+    const r = await call<{ user: Profile }>('/api/auth/reset', { token, password });
+    setSession(true);
+    return r.user;
+  },
+  verifyEmail: (token: string) => call<{ ok: boolean; email: string }>('/api/auth/verify', { token }),
+  resendVerification: () => call<{ ok: boolean; verified?: boolean }>('/api/auth/verify/resend', {}),
   profile: () => call<Profile>('/api/profile'),
   saveProfile: (patch: Partial<{ firstName: string; lastName: string; nickname: string; avatar: Avatar | null; prefs: Prefs }>) => call<Profile>('/api/profile', patch),
-  async changePassword(current: string, next: string) {
-    const r = await call<{ token: string }>('/api/auth/password', { current, next });
-    setToken(r.token);
-  },
+  changePassword: (current: string, next: string) => call('/api/auth/password', { current, next }),
   history: () => call<History>('/api/profile/history'),
   addHistory: (entry: Omit<SoloEntry, 'date'>) => call<{ ok: boolean }>('/api/profile/history', { entry }),
   pushSubscribe: (subscription: unknown) => call<{ ok: boolean }>('/api/push/subscribe', { subscription }),
@@ -138,8 +188,8 @@ export function fmtDeadline(iso: string | null): string {
 
 const STATUS: Record<string, string> = { lobby: 'Aguardando largada', running: 'Em andamento', finished: 'Encerrada' };
 
-export function onlineView(me: MeResponse | null, loading: boolean, deviceLink: string | null = null): string {
-  if (!getToken()) {
+export function onlineView(me: MeResponse | null, loading: boolean, deviceCode: DeviceCode | null = null): string {
+  if (!isLoggedIn()) {
     return `<h1>Multiplayer online</h1>
       <div class="panel"><h2>Entre na sua conta</h2>
         <p>Com e-mail e senha você joga de qualquer aparelho e guarda seu histórico.</p>
@@ -179,7 +229,7 @@ export function onlineView(me: MeResponse | null, loading: boolean, deviceLink: 
         <input id="league-code" type="text" maxlength="8" placeholder="ABC123" style="font:inherit;padding:8px;text-transform:uppercase;background:#0f1020;color:#fff;border:3px solid #5a5f9a">
         <button class="btn" data-act="online-join">Entrar ▶</button></div>
     </div>
-    ${accountPanel(me, deviceLink)}
+    ${accountPanel(me, deviceCode)}
     <button class="btn secondary" data-act="goto" data-arg="title">Voltar</button>`;
 }
 
@@ -193,7 +243,7 @@ export function pushState(): 'ligado' | 'bloqueado' | 'desligado' | 'indisponive
   return Notification.permission === 'granted' && localStorage.getItem('f1m8.push') === '1' ? 'ligado' : 'desligado';
 }
 
-function accountPanel(me: MeResponse, deviceLink: string | null): string {
+function accountPanel(me: MeResponse, deviceCode: DeviceCode | null): string {
   const st = pushState();
   const push =
     st === 'indisponivel'
@@ -208,11 +258,7 @@ function accountPanel(me: MeResponse, deviceLink: string | null): string {
       <div><h3>Notificações</h3>${push}</div>
       <div><h3>Seus aparelhos</h3>
         <p class="muted" style="font-size:8px">Conectado em ${me.user.devices ?? 1} aparelho(s)${me.user.google ? ' · Google vinculado ✓' : ''}.</p>
-        ${deviceLink
-          ? `<p style="font-size:8px;word-break:break-all" class="yellow">${esc(deviceLink)}</p>
-             <button class="btn small secondary" data-act="copy-invite" data-arg="${esc(deviceLink)}">Copiar link</button>
-             <p class="red" style="font-size:8px">Esse link dá acesso ao seu perfil: não compartilhe com ninguém.</p>`
-          : '<button class="btn small secondary" data-act="device-link">📱 Levar perfil para outro aparelho</button>'}
+        ${deviceCodePanel(deviceCode, 'Levar perfil para outro aparelho')}
         ${me.user.google ? '' : '<div id="google-link" style="margin-top:8px"></div>'}
         <div class="row" style="margin-top:8px">
           <button class="btn small secondary" data-act="rotate-token">Desconectar outros aparelhos</button>

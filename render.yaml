@@ -21,3 +21,10 @@ services:
       # Opcional: ativa o login com Google (Client ID do Google Cloud).
       - key: GOOGLE_CLIENT_ID
         sync: false
+      # E-mails de recuperação de senha e confirmação de cadastro (Resend).
+      - key: RESEND_API_KEY
+        sync: false
+      - key: EMAIL_FROM
+        value: "Estratégia F1 <nao-responda@estrategiaf1.com.br>"
+      - key: PUBLIC_URL
+        value: https://estrategiaf1.com.br
