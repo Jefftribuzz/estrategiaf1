@@ -16,7 +16,7 @@ let clock = new Date('2026-03-10T15:00:00Z');
 async function call(path: string, token?: string, body?: unknown) {
   const res = await fetch(base + path, {
     method: body === undefined ? 'GET' : 'POST',
-    headers: { 'content-type': 'application/json', ...(token ? { authorization: `Bearer ${token}` } : {}) },
+    headers: { 'content-type': 'application/json', 'x-gp8': 'api', ...(token ? { authorization: `Bearer ${token}` } : {}) },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   return { status: res.status, body: await res.json() };

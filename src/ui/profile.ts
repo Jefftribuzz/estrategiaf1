@@ -1,6 +1,7 @@
 import { getTeam, TEAMS } from '../engine/data/teams';
 import { getTrack } from '../engine/data/tracks';
 import { helmetFromDesign } from './sprites';
+import { deviceCodePanel, type DeviceCode } from './online';
 import { esc } from './views';
 
 // Telas de conta: entrar/criar conta e o perfil (dados, avatar, preferências,
@@ -24,6 +25,7 @@ export interface Profile {
   firstName: string;
   lastName: string;
   email: string | null;
+  emailVerified: boolean;
   hasPassword: boolean;
   google: boolean;
   avatar: Avatar | null;
@@ -66,7 +68,7 @@ export interface History {
 }
 
 export type ProfileTab = 'dados' | 'avatar' | 'preferencias' | 'historico' | 'seguranca';
-export type LoginTab = 'entrar' | 'criar';
+export type LoginTab = 'entrar' | 'criar' | 'codigo' | 'esqueci' | 'reset';
 
 /** Paleta de 16 cores no estilo dos consoles 8 bits. */
 export const PALETTE = [
@@ -95,18 +97,44 @@ export function clearDrafts() {
 const input = (id: string, label: string, value = '', type = 'text', extra = '') =>
   `<label for="${id}">${esc(label)}</label><input class="field" id="${id}" type="${type}" value="${esc(type === 'password' ? '' : (drafts[id] ?? value))}" ${extra}>`;
 
-export function loginView(tab: LoginTab, googleEnabled: boolean): string {
+export function loginView(tab: LoginTab, googleEnabled: boolean, forgotSent = false): string {
   const tabs = `<div class="tabs">
-    <button class="tab${tab === 'entrar' ? ' active' : ''}" data-act="login-tab" data-arg="entrar">Entrar</button>
-    <button class="tab${tab === 'criar' ? ' active' : ''}" data-act="login-tab" data-arg="criar">Criar conta</button></div>`;
+    <button class="tab${tab === 'entrar' || tab === 'esqueci' ? ' active' : ''}" data-act="login-tab" data-arg="entrar">Entrar</button>
+    <button class="tab${tab === 'criar' ? ' active' : ''}" data-act="login-tab" data-arg="criar">Criar conta</button>
+    <button class="tab${tab === 'codigo' ? ' active' : ''}" data-act="login-tab" data-arg="codigo">Tenho um código</button></div>`;
   const form =
-    tab === 'entrar'
+    tab === 'reset'
+      ? `<h3>Criar senha nova</h3>
+        <form class="form" data-form="reset">
+          ${input('rs-password', 'Nova senha (8+ caracteres, letras e números)', '', 'password', 'autocomplete="new-password" minlength="8" required')}
+          ${input('rs-password2', 'Confirme a nova senha', '', 'password', 'autocomplete="new-password" minlength="8" required')}
+          <button class="btn" type="submit">Salvar senha e entrar ▶</button>
+          <p class="muted" style="font-size:8px">Ao salvar, os outros aparelhos conectados são desconectados.</p>
+        </form>`
+    : tab === 'esqueci'
+      ? forgotSent
+        ? `<p class="green">Se esse e-mail tiver uma conta, enviamos um link para criar uma senha nova.</p>
+          <p class="muted" style="font-size:8px">O link vale por 30 minutos. Olhe também a caixa de spam.</p>
+          <button class="btn small secondary" data-act="login-tab" data-arg="entrar">Voltar para Entrar</button>`
+        : `<h3>Recuperar senha</h3>
+        <form class="form" data-form="forgot">
+          ${input('fg-email', 'E-mail da conta', '', 'email', 'autocomplete="email" required')}
+          <button class="btn" type="submit">Enviar link ▶</button>
+        </form>
+        <button class="btn small secondary" data-act="login-tab" data-arg="entrar">Voltar</button>`
+    : tab === 'codigo'
+      ? `<form class="form" data-form="redeem">
+          ${input('dv-code', 'Código de 8 letras', '', 'text', 'autocomplete="one-time-code" autocapitalize="characters" maxlength="9" required')}
+          <button class="btn" type="submit">Entrar com o código ▶</button>
+        </form>
+        <p class="muted" style="font-size:8px">Gere o código no aparelho em que você já está conectado: Perfil → Segurança → Código para outro aparelho. Ele vale por 10 minutos.</p>`
+    : tab === 'entrar'
       ? `<form class="form" data-form="login">
           ${input('login-email', 'E-mail', '', 'email', 'autocomplete="email" required')}
           ${input('login-password', 'Senha', '', 'password', 'autocomplete="current-password" required')}
           <button class="btn" type="submit">Entrar ▶</button>
         </form>
-        <p class="muted" style="font-size:8px">Esqueceu a senha? Entre com o Google (se vinculado) ou use o link de acesso de outro aparelho em que você já está conectado (Perfil → Segurança).</p>`
+        <button class="btn small secondary" data-act="login-tab" data-arg="esqueci">Esqueci minha senha</button>`
       : `<form class="form" data-form="signup">
           <div class="grid two">
             <div>${input('su-first', 'Nome', '', 'text', 'autocomplete="given-name" maxlength="30" required')}</div>
@@ -126,20 +154,20 @@ export function loginView(tab: LoginTab, googleEnabled: boolean): string {
     <button class="btn secondary" data-act="goto" data-arg="title">Voltar</button>`;
 }
 
-export function profileView(p: Profile, tab: ProfileTab, history: History | null, avatarDraft: Avatar, deviceLink: string | null = null): string {
+export function profileView(p: Profile, tab: ProfileTab, history: History | null, avatarDraft: Avatar, deviceCode: DeviceCode | null = null): string {
   const tabs: [ProfileTab, string][] = [
     ['dados', '👤 Dados'], ['avatar', '⛑️ Avatar'], ['preferencias', '⚙️ Preferências'], ['historico', '🏆 Histórico'], ['seguranca', '🔒 Segurança'],
   ];
   const header = `<div class="panel row">
     ${avatarImg(p.avatar, 64)}
     <div><div class="yellow" style="font-size:14px">${esc(p.name)}</div>
-    <div class="muted">${esc([p.firstName, p.lastName].filter(Boolean).join(' ') || 'Complete seu perfil')}${p.email ? ` · ${esc(p.email)}` : ''}</div></div>
+    <div class="muted">${esc([p.firstName, p.lastName].filter(Boolean).join(' ') || 'Complete seu perfil')}${p.email ? ` · ${esc(p.email)} ${p.emailVerified ? '<span class="green">✓</span>' : '<span class="red">(não confirmado)</span>'}` : ''}</div></div>
   </div>`;
   const body =
     tab === 'dados' ? dataTab(p) :
     tab === 'avatar' ? avatarTab(avatarDraft) :
     tab === 'preferencias' ? prefsTab(p) :
-    tab === 'historico' ? historyTab(history) : securityTab(p, deviceLink);
+    tab === 'historico' ? historyTab(history) : securityTab(p, deviceCode);
   return `<h1>Meu perfil</h1>${header}
     <div class="tabs">${tabs.map(([id, l]) => `<button class="tab${tab === id ? ' active' : ''}" data-act="profile-tab" data-arg="${id}">${l}</button>`).join('')}</div>
     ${body}
@@ -148,7 +176,9 @@ export function profileView(p: Profile, tab: ProfileTab, history: History | null
 
 function dataTab(p: Profile): string {
   const creds = p.hasPassword
-    ? `<p class="muted" style="font-size:8px">E-mail de acesso: <b>${esc(p.email ?? '')}</b>. Para trocar a senha, veja a aba Segurança.</p>`
+    ? `<p class="muted" style="font-size:8px">E-mail de acesso: <b>${esc(p.email ?? '')}</b>. Para trocar a senha, veja a aba Segurança.</p>
+      ${p.emailVerified ? '' : `<div class="panel tight"><p style="font-size:8px">Confirme seu e-mail pelo link que enviamos: só assim dá para recuperar a senha se você esquecer.</p>
+        <button class="btn small secondary" data-act="resend-verify">Reenviar e-mail de confirmação</button></div>`}`
     : `<div class="panel tight"><h3>Proteja seu perfil</h3>
         <p style="font-size:8px">Seu perfil ainda não tem e-mail e senha. Sem eles, você perde o acesso se limpar o navegador.</p>
         <form class="form" data-form="add-credentials">
@@ -257,7 +287,7 @@ function historyTab(h: History | null): string {
   return `${stats}<h2>Ligas online</h2>${leagues}<h2>Modo solo</h2><div class="panel">${solo}</div>`;
 }
 
-function securityTab(p: Profile, deviceLink: string | null): string {
+function securityTab(p: Profile, deviceCode: DeviceCode | null): string {
   const pw = p.hasPassword
     ? `<div class="panel"><h3>Trocar senha</h3>
         <form class="form" data-form="password">
@@ -270,11 +300,8 @@ function securityTab(p: Profile, deviceLink: string | null): string {
   return `${pw}
     <div class="panel"><h3>Aparelhos</h3>
       <p style="font-size:8px">Conectado em ${p.devices} aparelho(s)${p.google ? ' · Google vinculado ✓' : ''}.</p>
-      ${deviceLink ? `<p style="font-size:8px;word-break:break-all" class="yellow">${esc(deviceLink)}</p>
-        <button class="btn small secondary" data-act="copy-invite" data-arg="${esc(deviceLink)}">Copiar link</button>
-        <p class="red" style="font-size:8px">Esse link dá acesso ao seu perfil: não compartilhe com ninguém.</p>` : ''}
-      <div class="row">
-        <button class="btn small secondary" data-act="device-link">📱 Link de acesso para outro aparelho</button>
+      ${deviceCodePanel(deviceCode, 'Código para outro aparelho')}
+      <div class="row" style="margin-top:8px">
         <button class="btn small secondary" data-act="rotate-token">Desconectar outros aparelhos</button>
         <button class="btn small danger" data-act="account-logout">Sair deste aparelho</button>
       </div></div>`;

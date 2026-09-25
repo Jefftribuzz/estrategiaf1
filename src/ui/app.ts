@@ -53,14 +53,15 @@ import {
   api,
   disablePush,
   enablePush,
-  getToken,
+  isLoggedIn,
   leagueSessionPanel,
   lobbyView,
   mountGoogleButton,
   onlineView,
   pushState,
   rankingView,
-  useToken,
+  migrateLegacyToken,
+  type DeviceCode,
   type MeResponse,
   type RankingRow,
   type ServerConfig,
@@ -104,7 +105,10 @@ interface UiState {
   toast: string;
   busy: boolean;
   config: ServerConfig | null;
-  deviceLink: string | null;
+  deviceCode: DeviceCode | null;
+  /** Token do link de recuperação de senha (fica só na memória). */
+  resetToken: string | null;
+  forgotSent: boolean;
   ranking: RankingRow[] | null;
 }
 
@@ -136,7 +140,9 @@ const ui: UiState = {
   toast: '',
   busy: false,
   config: null,
-  deviceLink: null,
+  deviceCode: null,
+  resetToken: null,
+  forgotSent: false,
   ranking: null,
   profile: null,
   profileTab: 'dados',
@@ -719,7 +725,7 @@ const LAST_LEAGUE_KEY = 'f1m8.lastLeague';
 
 function lastLeague(): string | null {
   try {
-    return getToken() ? localStorage.getItem(LAST_LEAGUE_KEY) : null;
+    return isLoggedIn() ? localStorage.getItem(LAST_LEAGUE_KEY) : null;
   } catch {
     return null;
   }
@@ -814,7 +820,7 @@ function applyPrefs(p: Profile) {
 }
 
 async function loadProfile() {
-  if (!getToken()) {
+  if (!isLoggedIn()) {
     ui.profile = null;
     return;
   }
@@ -937,6 +943,41 @@ function handleForm(form: string) {
       });
       return;
     }
+    case 'forgot': {
+      const email = v('fg-email');
+      remote(async () => {
+        await api.forgot(email);
+        ui.forgotSent = true;
+      });
+      return;
+    }
+    case 'reset': {
+      const password = raw('rs-password');
+      if (password !== raw('rs-password2')) {
+        ui.error = 'As senhas não conferem.';
+        render();
+        return;
+      }
+      const token = ui.resetToken ?? '';
+      remote(async () => {
+        ui.profile = await api.resetPassword(token, password);
+        ui.resetToken = null;
+        ui.avatarDraft = { ...(ui.profile.avatar ?? DEFAULT_AVATAR) };
+        applyPrefs(ui.profile);
+        await afterAuth('Senha nova salva! Você já está conectado.');
+      });
+      return;
+    }
+    case 'redeem': {
+      const code = v('dv-code');
+      remote(async () => {
+        ui.profile = await api.redeemCode(code);
+        ui.avatarDraft = { ...(ui.profile.avatar ?? DEFAULT_AVATAR) };
+        applyPrefs(ui.profile);
+        await afterAuth(`Perfil conectado neste aparelho. Olá, ${ui.profile.name}!`);
+      });
+      return;
+    }
     case 'password': {
       const current = raw('pw-current');
       const next = raw('pw-next');
@@ -953,7 +994,7 @@ function handleForm(form: string) {
 }
 
 function loadMe() {
-  if (!getToken()) return;
+  if (!isLoggedIn()) return;
   ui.meLoading = true;
   remote(async () => {
     try {
@@ -1054,9 +1095,9 @@ function render() {
     'season-setup': seasonSetupView,
     hq: () => (ui.mode === 'league' ? leagueHq() : hqView(ui.season!, ui.hqTab)),
     champion: () => championView(ui.season!),
-    online: () => onlineView(ui.me, ui.meLoading, ui.deviceLink),
-    login: () => loginView(ui.loginTab, !!ui.config?.googleClientId),
-    perfil: () => (ui.profile ? profileView(ui.profile, ui.profileTab, ui.history, ui.avatarDraft, ui.deviceLink) : '<div class="panel">Carregando perfil...</div>'),
+    online: () => onlineView(ui.me, ui.meLoading, ui.deviceCode),
+    login: () => loginView(ui.loginTab, !!ui.config?.googleClientId, ui.forgotSent),
+    perfil: () => (ui.profile ? profileView(ui.profile, ui.profileTab, ui.history, ui.avatarDraft, ui.deviceCode) : '<div class="panel">Carregando perfil...</div>'),
     ranking: () => rankingView(ui.ranking),
     lobby: () => (ui.league ? lobbyView(ui.league) : onlineView(ui.me, false)),
     practice: practiceView, quali: qualiView, race: raceView, replay: replayView, results: resultsView,
@@ -1119,7 +1160,7 @@ function handle(act: string, arg: string, el: HTMLElement) {
           ui.season = null;
           ui.weekend = null;
         }
-        ui.deviceLink = null;
+        ui.deviceCode = null;
         go('online');
         loadConfig();
         loadMe();
@@ -1133,13 +1174,13 @@ function handle(act: string, arg: string, el: HTMLElement) {
         return;
       }
       if (arg === 'perfil') {
-        if (!getToken()) {
+        if (!isLoggedIn()) {
           ui.afterLogin = 'perfil';
           go('login');
           loadConfig();
           return;
         }
-        ui.deviceLink = null;
+        ui.deviceCode = null;
         go('perfil');
         remote(async () => {
           await loadProfile();
@@ -1350,18 +1391,23 @@ function handle(act: string, arg: string, el: HTMLElement) {
         ui.toast = 'Notificações desligadas.';
       });
       return;
-    case 'device-link':
+    case 'device-code':
       remote(async () => {
-        const { token } = await api.newDeviceToken();
-        ui.deviceLink = `${location.origin}${location.pathname}?perfil=${encodeURIComponent(token)}`;
-        ui.me = await api.me();
+        ui.deviceCode = await api.deviceCode();
+      });
+      return;
+    case 'resend-verify':
+      remote(async () => {
+        const r = await api.resendVerification();
+        if (r.verified) ui.profile = await api.profile();
+        ui.toast = r.verified ? 'Seu e-mail já está confirmado.' : 'Enviamos um novo e-mail de confirmação.';
       });
       return;
     case 'rotate-token':
-      if (!confirm('Desconectar todos os outros aparelhos? Eles vão precisar de um link novo para entrar.')) return;
+      if (!confirm('Desconectar todos os outros aparelhos? Eles vão precisar entrar de novo.')) return;
       remote(async () => {
         await api.rotate();
-        ui.deviceLink = null;
+        ui.deviceCode = null;
         ui.me = await api.me();
         ui.toast = 'Pronto: só este aparelho continua conectado.';
       });
@@ -1380,6 +1426,8 @@ function handle(act: string, arg: string, el: HTMLElement) {
       return;
     case 'login-tab':
       ui.loginTab = arg as LoginTab;
+      ui.forgotSent = false;
+      ui.error = '';
       break;
     case 'login-create':
       ui.loginTab = 'criar';
@@ -1390,7 +1438,7 @@ function handle(act: string, arg: string, el: HTMLElement) {
     case 'profile-tab':
       ui.profileTab = arg as ProfileTab;
       ui.toast = '';
-      ui.deviceLink = null;
+      ui.deviceCode = null;
       if (arg === 'historico') {
         ui.history = null;
         api.history().then((h) => {
@@ -1594,7 +1642,11 @@ export function mount(el: HTMLElement) {
     chip.unlock();
     handleForm(form.dataset.form!);
   });
-  if (getToken()) void loadProfile().then(() => render());
+  // Aparelhos com o token antigo no localStorage passam a usar o cookie HttpOnly.
+  void migrateLegacyToken().then(async () => {
+    if (isLoggedIn()) await loadProfile();
+    render();
+  });
   root.addEventListener('change', (e) => {
     const t = e.target as HTMLElement;
     if (t.dataset.act) handle(t.dataset.act, t.dataset.arg ?? '', t);
@@ -1602,20 +1654,46 @@ export function mount(el: HTMLElement) {
   const params = new URLSearchParams(location.search);
   const profile = params.get('perfil');
   const open = params.get('abrir');
-  if (profile && /^[\w-]+\.[\w-]+$/.test(profile)) {
-    // Link "levar perfil para outro aparelho".
-    useToken(profile);
+  const reset = params.get('reset');
+  const verify = params.get('verificar');
+  const deviceCode = params.get('codigo');
+  if (reset || verify || profile || deviceCode) {
+    // Tira o token do endereço (histórico, favoritos e cabeçalho Referer).
     history.replaceState(null, '', location.pathname);
-    ui.screen = 'online';
-    ui.toast = 'Perfil conectado neste aparelho!';
+  }
+  if (reset) {
+    ui.resetToken = reset;
+    ui.loginTab = 'reset';
+    ui.afterLogin = 'perfil';
+    ui.screen = 'login';
+  } else if (verify) {
+    api.verifyEmail(verify).then(
+      async (r) => {
+        ui.toast = `E-mail ${r.email} confirmado!`;
+        if (isLoggedIn()) await loadProfile();
+        render();
+      },
+      (e: Error) => {
+        ui.error = e.message;
+        render();
+      },
+    );
+  } else if (deviceCode) {
+    keepDrafts({ 'dv-code': deviceCode });
+    ui.loginTab = 'codigo';
+    ui.screen = 'login';
     loadConfig();
-    loadMe();
-  } else if (open && getToken()) {
+  } else if (profile) {
+    // Links antigos com o token no endereço não valem mais.
+    ui.loginTab = 'codigo';
+    ui.screen = 'login';
+    ui.error = 'Esse tipo de link não é mais aceito. Gere um código no aparelho em que você já está conectado.';
+  } else if (open && isLoggedIn()) {
     // Clique numa notificação: abre a liga.
     history.replaceState(null, '', location.pathname);
     openLeague(open);
   }
-  if (params.get('tela') === 'online' && !profile) {
+  if (params.get('tela') === 'online' && !profile && !reset && !deviceCode) {
     // Atalho da landing page: "Jogar com amigos".
     history.replaceState(null, '', location.pathname);
     ui.screen = 'online';
@@ -1626,7 +1704,7 @@ export function mount(el: HTMLElement) {
   if (code) {
     ui.screen = 'online';
     loadConfig();
-    if (getToken()) remote(() => joinByCode(code));
+    if (isLoggedIn()) remote(() => joinByCode(code));
   }
   startPolling();
   render();

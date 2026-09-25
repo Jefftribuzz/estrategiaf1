@@ -20,7 +20,7 @@ const deadEndpoints = new Set<string>();
 async function call(path: string, token?: string, body?: unknown, ip = '1.1.1.1') {
   const res = await fetch(base + path, {
     method: body === undefined ? 'GET' : 'POST',
-    headers: { 'content-type': 'application/json', 'x-forwarded-for': ip, ...(token ? { authorization: `Bearer ${token}` } : {}) },
+    headers: { 'content-type': 'application/json', 'x-gp8': 'api', 'x-forwarded-for': ip, ...(token ? { authorization: `Bearer ${token}` } : {}) },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   return { status: res.status, headers: res.headers, body: await res.json().catch(() => null) };
@@ -107,9 +107,10 @@ describe('domínio: landing na raiz e jogo em /jogar/', () => {
 });
 
 describe('Fase 5: perfil em vários aparelhos e Google', () => {
-  test('link para outro aparelho e desconectar os outros', async () => {
+  test('código para outro aparelho e desconectar os outros', async () => {
     const me = (await call('/api/register', undefined, { name: 'Jeff' }, '2.2.2.2')).body;
-    const other = (await call('/api/token/new', me.token, {})).body.token;
+    const { code } = (await call('/api/device/code', me.token, {})).body;
+    const other = (await call('/api/device/redeem', undefined, { code })).body.token;
     expect((await call('/api/me', other)).body.user.devices).toBe(2);
     const fresh = (await call('/api/token/rotate', other, {})).body.token;
     expect((await call('/api/me', me.token)).status).toBe(401);

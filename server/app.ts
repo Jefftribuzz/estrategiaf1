@@ -38,6 +38,7 @@ import {
   type Prefs,
 } from './auth';
 import type { GoogleVerifier } from './google';
+import { linkMail, type Mailer } from './mailer';
 import { isSubscription, loadVapid, webPushSender, type PushPayload, type PushSender, type PushSubscriptionJSON, type Vapid } from './push';
 import { RateLimiter } from './ratelimit';
 import { KeyedMutex, type Store } from './store';
@@ -57,7 +58,13 @@ interface User {
   googleSub?: string;
   push?: PushSubscriptionJSON[];
   email?: string;
+  /** O dono confirmou o e-mail pelo link enviado. */
+  emailVerified?: boolean;
   passwordHash?: string;
+  /** Hash do link de recuperação de senha mais recente (só ele vale). */
+  resetHash?: string;
+  /** Hash do link de confirmação de e-mail mais recente. */
+  verifyHash?: string;
   firstName?: string;
   lastName?: string;
   avatar?: Avatar;
@@ -100,6 +107,10 @@ export interface AppOptions {
   pushSend?: PushSender;
   /** Atrás de proxy (Render, Fly...): usa X-Forwarded-For para o IP. */
   trustProxy?: boolean;
+  /** Envio de e-mails (recuperação de senha, confirmação). */
+  mailer?: Mailer;
+  /** Endereço público do site, usado nos links dos e-mails. */
+  publicUrl?: string;
 }
 
 class HttpError extends Error {
@@ -111,6 +122,11 @@ class HttpError extends Error {
 const MAX_BODY = 64 * 1024;
 const MAX_TOKENS = 10;
 const MAX_PUSH = 5;
+const COOKIE = 'gp8_session';
+const COOKIE_MAX_AGE = 180 * 24 * 3600;
+const RESET_TTL_MS = 30 * 60_000;
+const VERIFY_TTL_MS = 24 * 60 * 60_000;
+const DEVICE_TTL_MS = 10 * 60_000;
 const REMIND_BEFORE_MS = 60 * 60_000;
 const CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const DIFFICULTIES: Difficulty['id'][] = ['facil', 'normal', 'dificil'];
@@ -223,15 +239,75 @@ export function createApp(opts: AppOptions) {
     if (!limiter.take(key, max, windowMs)) throw new HttpError(429, 'Muitas requisições. Espere um pouco e tente de novo.');
   }
 
+  // Sessão: no navegador, um cookie HttpOnly (o JavaScript da página não
+  // consegue ler o token). Clientes de API e testes podem usar Bearer.
+
+  function cookieToken(req: IncomingMessage): string | null {
+    for (const part of (req.headers.cookie ?? '').split(';')) {
+      const [k, ...v] = part.trim().split('=');
+      if (k === COOKIE) return v.join('=') || null;
+    }
+    return null;
+  }
+
+  /** Token desta requisição: Authorization Bearer ou, no navegador, o cookie. */
+  function requestToken(req: IncomingMessage): string | null {
+    const h = req.headers.authorization;
+    if (h) return /^Bearer ([\w-]+\.[\w-]+)$/.exec(h)?.[1] ?? null;
+    return cookieToken(req);
+  }
+
   /** Hash do token usado nesta requisição (para sair só deste aparelho). */
   function requestTokenHash(req: IncomingMessage): string | null {
-    const m = /^Bearer [\w-]+\.([\w-]+)$/.exec(req.headers.authorization ?? '');
+    const m = /^[\w-]+\.([\w-]+)$/.exec(requestToken(req) ?? '');
     return m ? sha256(m[1]) : null;
   }
 
+  function isHttps(req: IncomingMessage): boolean {
+    return !!opts.trustProxy && req.headers['x-forwarded-proto'] === 'https';
+  }
+
+  function sessionCookie(req: IncomingMessage, token: string | null): string {
+    const attrs = ['Path=/api', 'HttpOnly', 'SameSite=Lax', ...(isHttps(req) ? ['Secure'] : [])];
+    return token ? [`${COOKIE}=${token}`, `Max-Age=${COOKIE_MAX_AGE}`, ...attrs].join('; ') : [`${COOKIE}=`, 'Max-Age=0', ...attrs].join('; ');
+  }
+
+  /**
+   * Proteção contra CSRF: toda requisição que muda algo precisa do cabeçalho
+   * X-GP8 (um site de fora não consegue mandar cabeçalhos próprios sem a
+   * permissão do CORS, que este servidor não dá) ou de um Bearer. Se vier
+   * Origin, ele tem de ser o próprio site.
+   */
+  function checkCsrf(req: IncomingMessage) {
+    const method = req.method ?? 'GET';
+    if (method === 'GET' || method === 'HEAD') return;
+    const origin = req.headers.origin;
+    if (origin && origin !== 'null') {
+      let host = '';
+      try {
+        host = new URL(origin).host;
+      } catch {
+        /* inválido */
+      }
+      const own = [req.headers.host, opts.trustProxy ? req.headers['x-forwarded-host'] : undefined].flat().filter(Boolean);
+      if (!own.includes(host)) throw new HttpError(403, 'Origem não permitida.');
+    } else if (origin === 'null') {
+      throw new HttpError(403, 'Origem não permitida.');
+    }
+    if (!req.headers['x-gp8'] && !req.headers.authorization) throw new HttpError(403, 'Requisição recusada.');
+  }
+
+  /**
+   * Resposta de login: grava o cookie de sessão. O token só vai no corpo para
+   * clientes de API (X-GP8: api) sem cookie, nunca para a página do jogo.
+   */
+  function sendSession(req: IncomingMessage, res: ServerResponse, token: string, body: Record<string, unknown>) {
+    const api = req.headers['x-gp8'] === 'api' && !cookieToken(req);
+    return send(res, 200, api ? { ...body, token } : body, { 'set-cookie': sessionCookie(req, token) });
+  }
+
   async function auth(req: IncomingMessage): Promise<User> {
-    const h = req.headers.authorization ?? '';
-    const m = /^Bearer ([\w-]+)\.([\w-]+)$/.exec(h);
+    const m = /^([\w-]+)\.([\w-]+)$/.exec(requestToken(req) ?? '');
     if (!m) throw new HttpError(401, 'Faça login.');
     const user = await store.get<User>(`user:${m[1]}`);
     if (!user || !tokenOk(user, m[2])) throw new HttpError(401, 'Sessão inválida.');
@@ -239,7 +315,7 @@ export function createApp(opts: AppOptions) {
   }
 
   async function optionalAuth(req: IncomingMessage): Promise<User | null> {
-    if (!req.headers.authorization) return null;
+    if (!requestToken(req)) return null;
     try {
       return await auth(req);
     } catch {
@@ -442,6 +518,7 @@ export function createApp(opts: AppOptions) {
       firstName: u.firstName ?? '',
       lastName: u.lastName ?? '',
       email: u.email ?? null,
+      emailVerified: !!u.email && !!u.emailVerified,
       hasPassword: !!u.passwordHash,
       google: !!u.googleSub,
       avatar: u.avatar ?? null,
@@ -460,7 +537,56 @@ export function createApp(opts: AppOptions) {
       if (taken && taken.userId !== userId) throw new HttpError(409, 'Já existe uma conta com esse e-mail. Use "Entrar".');
       await store.put(`email:${email}`, { userId });
     });
-    await updateUser(userId, (u) => ({ ...u, email, passwordHash: hash }));
+    await updateUser(userId, (u) => ({ ...u, email, passwordHash: hash, emailVerified: false }));
+  }
+
+  // --------------------------------------------------- e-mails e links ----
+
+  const publicUrl = (opts.publicUrl ?? 'https://estrategiaf1.com.br').replace(/\/+$/, '');
+
+  async function mail(m: Parameters<Mailer>[0]) {
+    if (!opts.mailer) return;
+    await opts.mailer(m).catch((e) => console.error('e-mail', e));
+  }
+
+  /** Token aleatório de uso único; só o hash fica guardado. */
+  function oneTimeToken(): { token: string; hash: string } {
+    const token = randomBytes(32).toString('base64url');
+    return { token, hash: sha256(token) };
+  }
+
+  async function sendVerification(userId: string) {
+    const u = await store.get<User>(`user:${userId}`);
+    if (!u?.email || u.emailVerified) return;
+    const { token, hash } = oneTimeToken();
+    await store.put(`verify:${hash}`, { userId, email: u.email, exp: now().getTime() + VERIFY_TTL_MS });
+    await updateUser(userId, (x) => ({ ...x, verifyHash: hash }));
+    await mail(
+      linkMail(
+        u.email,
+        'Confirme seu e-mail — Estratégia F1',
+        `Olá, ${u.firstName || u.name}! Confirme que este e-mail é seu para poder recuperar a senha se precisar.`,
+        'Confirmar e-mail',
+        `${publicUrl}/jogar/?verificar=${token}`,
+        'O link vale por 24 horas. Se você não criou uma conta no Estratégia F1, ignore esta mensagem.',
+      ),
+    );
+  }
+
+  /** Lê e consome um link de uso único (recuperação ou confirmação). */
+  async function consumeLink(kind: 'reset' | 'verify', token: unknown): Promise<User> {
+    const invalid = new HttpError(400, kind === 'reset' ? 'Link de recuperação inválido ou vencido. Peça outro.' : 'Link de confirmação inválido ou vencido.');
+    if (typeof token !== 'string' || !/^[\w-]{20,100}$/.test(token)) throw invalid;
+    const hash = sha256(token);
+    return locks.run(`${kind}:${hash}`, async () => {
+      const ref = await store.get<{ userId: string; exp: number; email?: string; used?: boolean }>(`${kind}:${hash}`);
+      if (!ref || ref.used || ref.exp <= now().getTime()) throw invalid;
+      const u = await store.get<User>(`user:${ref.userId}`);
+      const current = kind === 'reset' ? u?.resetHash : u?.verifyHash;
+      if (!u || current !== hash || (ref.email && ref.email !== u.email)) throw invalid;
+      await store.put(`${kind}:${hash}`, { ...ref, used: true });
+      return u;
+    });
   }
 
   /** Troca o apelido também nas ligas e no ranking. */
@@ -533,6 +659,7 @@ export function createApp(opts: AppOptions) {
     const method = req.method ?? 'GET';
     const ip = ipOf(req);
     limit(`api:${ip}`, 600, 10 * 60_000);
+    checkCsrf(req);
 
     if (method === 'GET' && path === '/api/config') {
       return send(res, 200, { googleClientId: opts.googleClientId ?? null, vapidPublicKey: (await getVapid()).publicKey });
@@ -550,7 +677,7 @@ export function createApp(opts: AppOptions) {
       limit(`register:${ip}`, 5, 60 * 60_000);
       const body = await readJson(req);
       const { token, user } = await createUser(cleanName(body.name, 20, 'seu nome'));
-      return send(res, 200, { token, user: { id: user.id, name: user.name } });
+      return sendSession(req, res, token, { user: { id: user.id, name: user.name } });
     }
 
     if (method === 'POST' && path === '/api/login/google') {
@@ -577,11 +704,11 @@ export function createApp(opts: AppOptions) {
       if (linked) {
         const token = await issueToken(linked.userId);
         const u = (await store.get<User>(`user:${linked.userId}`))!;
-        return send(res, 200, { token, user: { id: u.id, name: u.name } });
+        return sendSession(req, res, token, { user: { id: u.id, name: u.name } });
       }
       const name = cleanName(body.name ?? identity.name ?? 'Piloto', 20, 'seu nome');
       const { token, user } = await createUser(name, identity.sub);
-      return send(res, 200, { token, user: { id: user.id, name: user.name } });
+      return sendSession(req, res, token, { user: { id: user.id, name: user.name } });
     }
 
     if (method === 'POST' && path === '/api/auth/signup') {
@@ -609,9 +736,10 @@ export function createApp(opts: AppOptions) {
       await setCredentials(userId, email, password);
       await updateUser(userId, (u) => ({ ...u, firstName, lastName, name: nickname }));
       if (current && current.name !== nickname) await propagateName(current, nickname);
+      await sendVerification(userId);
       const token = await issueToken(userId);
       const u = (await store.get<User>(`user:${userId}`))!;
-      return send(res, 200, { token, user: publicUser(u) });
+      return sendSession(req, res, token, { user: publicUser(u) });
     }
 
     if (method === 'POST' && path === '/api/auth/login') {
@@ -629,7 +757,84 @@ export function createApp(opts: AppOptions) {
       const ok = await verifyPassword(String(body.password ?? ''), u?.passwordHash);
       if (!u || !ok) throw new HttpError(401, 'E-mail ou senha incorretos.');
       const token = await issueToken(u.id);
-      return send(res, 200, { token, user: publicUser(u) });
+      return sendSession(req, res, token, { user: publicUser(u) });
+    }
+
+    if (method === 'POST' && path === '/api/auth/forgot') {
+      // Resposta sempre igual: não revela se o e-mail tem conta.
+      limit(`forgot:${ip}`, 5, 60 * 60_000);
+      const body = await readJson(req);
+      let email = '';
+      try {
+        email = normalizeEmail(body.email);
+      } catch (e) {
+        throw new HttpError(400, (e as Error).message);
+      }
+      if (limiter.take(`forgot-email:${email}`, 3, 60 * 60_000)) {
+        const ref = await store.get<{ userId: string }>(`email:${email}`);
+        const u = ref ? await store.get<User>(`user:${ref.userId}`) : null;
+        if (u?.passwordHash && u.email === email) {
+          const { token, hash } = oneTimeToken();
+          await store.put(`reset:${hash}`, { userId: u.id, email, exp: now().getTime() + RESET_TTL_MS });
+          await updateUser(u.id, (x) => ({ ...x, resetHash: hash }));
+          await mail(
+            linkMail(
+              email,
+              'Recuperar senha — Estratégia F1',
+              `Olá, ${u.firstName || u.name}! Recebemos um pedido para criar uma senha nova para sua conta.`,
+              'Criar senha nova',
+              `${publicUrl}/jogar/?reset=${token}`,
+              'O link vale por 30 minutos e só pode ser usado uma vez. Se não foi você, ignore esta mensagem: sua senha continua a mesma.',
+            ),
+          );
+        }
+      }
+      return send(res, 200, { ok: true });
+    }
+
+    if (method === 'POST' && path === '/api/auth/reset') {
+      limit(`reset:${ip}`, 10, 15 * 60_000);
+      const body = await readJson(req);
+      let password: string;
+      try {
+        password = validatePassword(body.password);
+      } catch (e) {
+        throw new HttpError(400, (e as Error).message);
+      }
+      const u = await consumeLink('reset', body.token);
+      const hash = await hashPassword(password);
+      // Quem abriu o link provou que o e-mail é dele. Os outros aparelhos saem.
+      await updateUser(u.id, (x) => ({ ...x, passwordHash: hash, resetHash: undefined, emailVerified: true }));
+      const token = await issueToken(u.id, true);
+      const fresh = (await store.get<User>(`user:${u.id}`))!;
+      return sendSession(req, res, token, { user: publicUser(fresh) });
+    }
+
+    if (method === 'POST' && path === '/api/auth/verify') {
+      limit(`verify:${ip}`, 20, 15 * 60_000);
+      const body = await readJson(req);
+      const u = await consumeLink('verify', body.token);
+      await updateUser(u.id, (x) => ({ ...x, emailVerified: true, verifyHash: undefined }));
+      return send(res, 200, { ok: true, email: u.email });
+    }
+
+    if (method === 'POST' && path === '/api/device/redeem') {
+      // Código curto mostrado no outro aparelho (uso único, 10 minutos).
+      limit(`redeem:${ip}`, 10, 15 * 60_000);
+      const body = await readJson(req);
+      const code = String(body.code ?? '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+      const invalid = new HttpError(400, 'Código inválido ou vencido. Gere outro no aparelho em que você já entrou.');
+      if (code.length !== 8) throw invalid;
+      const userId = await locks.run(`devcode:${code}`, async () => {
+        const ref = await store.get<{ userId: string; exp: number; used?: boolean }>(`devcode:${code}`);
+        if (!ref || ref.used || ref.exp <= now().getTime()) throw invalid;
+        await store.put(`devcode:${code}`, { ...ref, used: true });
+        return ref.userId;
+      });
+      const u = await store.get<User>(`user:${userId}`);
+      if (!u) throw invalid;
+      const token = await issueToken(u.id);
+      return sendSession(req, res, token, { user: publicUser(u) });
     }
 
     const user = await auth(req);
@@ -661,7 +866,7 @@ export function createApp(opts: AppOptions) {
       limit(`password:${user.id}`, 10, 15 * 60_000);
       const body = await readJson(req);
       if (!user.passwordHash) throw new HttpError(400, 'Este perfil ainda não tem senha.');
-      if (!(await verifyPassword(String(body.current ?? ''), user.passwordHash))) throw new HttpError(401, 'Senha atual incorreta.');
+      if (!(await verifyPassword(String(body.current ?? ''), user.passwordHash))) throw new HttpError(403, 'Senha atual incorreta.');
       let next: string;
       try {
         next = validatePassword(body.next);
@@ -672,13 +877,43 @@ export function createApp(opts: AppOptions) {
       await updateUser(user.id, (u) => ({ ...u, passwordHash: hash }));
       // Troca de senha desconecta os outros aparelhos.
       const token = await issueToken(user.id, true);
-      return send(res, 200, { token });
+      return sendSession(req, res, token, { ok: true });
     }
 
     if (method === 'POST' && path === '/api/auth/logout') {
       const hash = requestTokenHash(req);
       await updateUser(user.id, (u) => ({ ...u, tokenHashes: u.tokenHashes.filter((h) => h !== hash) }));
+      return send(res, 200, { ok: true }, { 'set-cookie': sessionCookie(req, null) });
+    }
+
+    if (method === 'POST' && path === '/api/auth/cookie') {
+      // Migração: a página antiga guardava o token no localStorage. Troca por
+      // um token novo em cookie HttpOnly e invalida o antigo.
+      const old = requestTokenHash(req);
+      const secret = randomBytes(24).toString('base64url');
+      await updateUser(user.id, (u) => ({ ...u, tokenHashes: [...u.tokenHashes.filter((h) => h !== old), sha256(secret)].slice(-MAX_TOKENS) }));
+      return sendSession(req, res, `${user.id}.${secret}`, { user: publicUser(user) });
+    }
+
+    if (method === 'POST' && path === '/api/auth/verify/resend') {
+      limit(`verify-resend:${user.id}`, 3, 60 * 60_000);
+      if (!user.email) throw new HttpError(400, 'Este perfil ainda não tem e-mail.');
+      if (user.emailVerified) return send(res, 200, { ok: true, verified: true });
+      await sendVerification(user.id);
       return send(res, 200, { ok: true });
+    }
+
+    if (method === 'POST' && path === '/api/device/code') {
+      limit(`devcode:${user.id}`, 10, 60 * 60_000);
+      let code = '';
+      for (let i = 0; i < 20 && !code; i++) {
+        const c = Array.from(randomBytes(8), (b) => CODE_CHARS[b % CODE_CHARS.length]).join('');
+        if (!(await store.get(`devcode:${c}`))) code = c;
+      }
+      if (!code) throw new HttpError(500, 'Não foi possível gerar o código.');
+      const exp = now().getTime() + DEVICE_TTL_MS;
+      await store.put(`devcode:${code}`, { userId: user.id, exp });
+      return send(res, 200, { code, expiresAt: new Date(exp).toISOString() });
     }
 
     if (method === 'GET' && path === '/api/profile/history') {
@@ -706,14 +941,9 @@ export function createApp(opts: AppOptions) {
       return send(res, 200, { user: publicUser(user), leagues });
     }
 
-    if (method === 'POST' && path === '/api/token/new') {
-      // Link para levar o perfil a outro aparelho (token extra).
-      return send(res, 200, { token: await issueToken(user.id) });
-    }
-
     if (method === 'POST' && path === '/api/token/rotate') {
       // Desconecta todos os outros aparelhos.
-      return send(res, 200, { token: await issueToken(user.id, true) });
+      return sendSession(req, res, await issueToken(user.id, true), { ok: true });
     }
 
     if (method === 'POST' && path === '/api/push/subscribe') {
@@ -822,7 +1052,7 @@ export function createApp(opts: AppOptions) {
     // O jogo usa caminhos relativos: /jogar precisa da barra no fim.
     if (path === GAME.slice(0, -1)) return redirect(res, GAME + url.search);
     // Links de convite, perfil e notificação feitos na raiz vão para o jogo.
-    if (path === '/' && /[?&](liga|perfil|abrir|tela)=/.test(url.search)) return redirect(res, GAME + url.search, 302);
+    if (path === '/' && /[?&](liga|perfil|abrir|tela|reset|verificar|codigo)=/.test(url.search)) return redirect(res, GAME + url.search, 302);
 
     const root = resolve(opts.staticDir);
     let rel: string;

@@ -106,16 +106,19 @@ fuso dele.
   quem ainda não decidiu), resultado do GP e fim de temporada. Tocar na
   notificação abre a liga. No iPhone, só funciona com o jogo instalado na tela
   de início (iOS 16.4+).
-- **Perfil em vários aparelhos**: em *Multiplayer → Conta*, "Levar perfil para
-  outro aparelho" gera um link de acesso. "Desconectar outros aparelhos"
-  invalida todos os links antigos.
+- **Perfil em vários aparelhos**: em *Multiplayer → Conta* (ou *Perfil →
+  Segurança*), "Levar perfil para outro aparelho" gera um **código de 8 letras**
+  que vale por 10 minutos e só uma vez. No outro aparelho: *Conta → Tenho um
+  código*. "Desconectar outros aparelhos" encerra as outras sessões.
 - **Login com Google** (opcional): ativado quando o servidor tem
   `GOOGLE_CLIENT_ID`. Quem já tem perfil por apelido pode vincular a conta
   Google e recuperar o acesso em qualquer aparelho.
 - **Hall da fama**: ranking global de títulos, vitórias e pódios nas ligas.
 - **Proteção do servidor**: limite de requisições por IP (cadastro, login,
-  convites e API), cabeçalhos de segurança (CSP, HSTS, nosniff, anti-iframe) e
-  tokens guardados só como hash.
+  convites e API), cabeçalhos de segurança (CSP, HSTS, nosniff, anti-iframe),
+  tokens guardados só como hash, sessão em **cookie HttpOnly** (o JavaScript
+  da página não lê o token) e proteção contra CSRF (cabeçalho `X-GP8`
+  obrigatório e checagem de `Origin`).
 
 ## Domínio: estrategiaf1.com.br
 
@@ -127,7 +130,7 @@ Um único serviço no Render atende o domínio inteiro:
 | `estrategiaf1.com.br/jogar/` | o jogo (PWA instalável) |
 | `estrategiaf1.com.br/api/` | servidor do multiplayer |
 
-Links antigos com `?liga=`, `?perfil=` ou `?abrir=` na raiz são redirecionados
+Links com `?liga=`, `?abrir=`, `?reset=`, `?verificar=` ou `?codigo=` na raiz são redirecionados
 para `/jogar/`. Para editar a landing, mexa em `landing/index.html` e
 `landing/style.css`. As imagens ficam em `landing/img/`.
 
@@ -152,7 +155,14 @@ para `/jogar/`. Para editar a landing, mexa em `landing/index.html` e
 5. **Manter acordado**: em https://cron-job.org, agende um acesso a
    `https://estrategiaf1.com.br/health` a cada 10 minutos. Sem isso, o plano
    grátis dorme e os lembretes de prazo atrasam. Nenhuma corrida se perde.
-6. **Login com Google (opcional)**: no Google Cloud, crie um *OAuth Client ID*
+6. **E-mails (recuperar senha e confirmar cadastro)**: crie uma conta grátis
+   em https://resend.com, adicione o domínio `estrategiaf1.com.br` em
+   *Domains* e crie no Registro.br os registros DNS que o Resend mostrar
+   (SPF/DKIM). Depois gere uma chave em *API Keys* e coloque em
+   `RESEND_API_KEY` no Render (*Environment*). `EMAIL_FROM` e `PUBLIC_URL` já
+   vêm preenchidos pelo `render.yaml`. Sem a chave, o jogo funciona, mas não
+   envia e-mails.
+7. **Login com Google (opcional)**: no Google Cloud, crie um *OAuth Client ID*
    (*Web application*) com `https://estrategiaf1.com.br` em
    *Authorized JavaScript origins* e coloque o ID em `GOOGLE_CLIENT_ID`.
 
@@ -176,10 +186,15 @@ automaticamente. O servidor cria a tabela sozinho (`gp8_kv`). Sem
     de prazo, resultados), sincronizados entre aparelhos;
   - **Histórico:** ligas online, com posição, pontos, vitórias, pódios e cada
     GP, e as corridas rápidas e temporadas solo jogadas logado;
-  - **Segurança:** trocar senha, link de acesso para outro aparelho e sair.
-- Recuperar senha por e-mail ainda não existe, porque exige um serviço de envio
-  de e-mails. Enquanto isso, dá para entrar pelo Google (se vinculado) ou pelo
-  link de acesso gerado em outro aparelho.
+  - **Segurança:** trocar senha, código para outro aparelho e sair.
+- **Recuperar senha**: *Entrar → Esqueci minha senha* manda um link por e-mail
+  que vale 30 minutos e só uma vez (só o link mais recente vale). A resposta é
+  sempre a mesma, exista ou não a conta. Criar a senha nova desconecta os
+  outros aparelhos.
+- **Confirmar e-mail**: o cadastro manda um link de confirmação (vale 24 h). No
+  perfil aparece "não confirmado" com o botão para reenviar.
+- Os links e códigos são guardados só como hash e saem do endereço da página
+  assim que ela abre.
 
 ## SEO (busca no Google)
 
